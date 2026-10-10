@@ -170,10 +170,11 @@ The scene-selection function ranks the returned scenes by their reported `eo:clo
 The RGB product uses these Sentinel-2 spectral bands:
 
     Display channel  Spectral band 
----------------  ------------- 
-    Red              B04           
-    Green            B03           
-    Blue             B02           
+ 
+Display Channel         Spectral Bands
+Red                     B04           
+Green                   B03           
+Blue                    B02                   
 
 The bands are loaded through the named variables `red`, `green`, and `blue`, then combined into an XArray array with a `band` dimension.
 
@@ -289,3 +290,4 @@ The workflow will search for imagery, select a scene, process the requested prod
 The long-term objective is to develop a reusable and extensible EO processing engine that makes satellite-derived information easier to request and consume through a web interface.
 
 The modular design will support new satellite data sources, additional spectral indices, multi-scene compositing, scalable cloud processing, and standardized outputs for geospatial applications and decision-support systems.
+
