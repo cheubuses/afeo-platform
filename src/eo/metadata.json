@@ -1,0 +1,23 @@
+import json
+
+metadata = {
+    "scene_id": best_item.id,
+    "collection": best_item.collection_id,
+    "datetime": best_item.properties.get("datetime"),
+    "cloud_cover": best_item.properties.get("eo:cloud_cover"),
+    "platform": best_item.properties.get("platform"),
+    "constellation": best_item.properties.get("constellation"),
+    "processing_level": best_item.properties.get("processing:level"),
+    "epsg": best_item.properties.get("proj:epsg"),
+    "bbox": best_item.bbox,
+    "geometry": best_item.geometry
+}
+
+with open("metadata.json", "w") as f:
+    json.dump(
+        metadata,
+        f,
+        indent=4
+    )
+
+print("\nMetadata saved as metadata.json")
