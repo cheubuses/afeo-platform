@@ -286,36 +286,6 @@ The workflow will search for imagery, select a scene, process the requested prod
 9. Define a stable JSON response schema for the future FastAPI backend.
 10. Integrate the processing engine with the EO platform frontend.
 
-## 14. Intended Future Architecture
-
-The planned system will separate the user interface, API, processing engine, and data storage.
-
-```text
-Web Frontend
-    |
-    v
-FastAPI Backend
-    |
-    v
-EO Processing Engine
-    |
-    +--> STAC Search
-    |
-    +--> Scene Selection
-    |
-    +--> Band Loading
-    |
-    +--> RGB / NDVI / Other Products
-    |
-    +--> COG Export
-    |
-    +--> JSON Metadata
-    |
-    v
-Cloud Storage / API Response
-```
-
-The frontend will eventually submit the user's AOI, date range, and requested product to the backend. The backend will invoke the processing engine and return structured metadata and links to the generated products.
 
 ## 15. Project Vision
 
