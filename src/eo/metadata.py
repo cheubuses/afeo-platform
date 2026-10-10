@@ -1,8 +1,66 @@
-import pystac_client
 
-STAC_URL = "https://earth-search.aws.element84.com/v1"
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 
-def connect_to_catalog():
-    catalog = pystac_client.Client.open(STAC_URL)
-    return catalog
+def create_metadata(best_item, data, process, output_path):
+    """Create metadata for the selected EO product."""
+
+    process = process.upper()
+    output_path = Path(output_path)
+
+    metadata = {
+        "product": {
+            "name": process,
+            "format": "COG",
+            "filename": output_path.name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "source": {
+            "scene_id": best_item.id,
+            "collection": best_item.collection_id,
+            "datetime": best_item.properties.get("datetime"),
+            "cloud_cover": best_item.properties.get("eo:cloud_cover"),
+            "platform": best_item.properties.get("platform"),
+            "constellation": best_item.properties.get("constellation"),
+            "processing_level": best_item.properties.get(
+                "processing:level"
+            ),
+        },
+        "spatial": {
+            "epsg": best_item.properties.get("proj:epsg"),
+            "crs": str(data.rio.crs),
+            "bbox": best_item.bbox,
+            "geometry": best_item.geometry,
+            "width": int(data.sizes["x"]),
+            "height": int(data.sizes["y"]),
+        },
+        "processing": {
+            "product_type": process,
+            "method": (
+                "RGB composite"
+                if process == "RGB"
+                else "NDVI = (NIR - Red) / (NIR + Red)"
+            ),
+        },
+        "output": {
+            "local_path": str(output_path),
+            "format": "COG",
+        },
+    }
+
+    return metadata
+
+
+def save_metadata(metadata, output_path="metadata.json"):
+    """Save the metadata manifest as a JSON file."""
+
+    output_path = Path(output_path)
+
+    with output_path.open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=4, default=str)
+
+    print(f"Metadata saved as {output_path}")
+
+    return output_path

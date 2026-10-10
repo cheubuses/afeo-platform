@@ -1,22 +1,22 @@
 {
     "input": {
-        "latitude": -0.3567,
-        "longitude": 36.1234,
+        "latitude": -0.3034,
+        "longitude": 34.0167,
         "radius_km": 1.0
     },
     "stac_search": {
         "catalog": "Earth Search",
         "collection": "sentinel-2-l2a",
-        "date_range": "2026-01-01/2026-08-08",
+        "date_range": "2026-01-01/2026-10-01",
         "start_date": "2026-01-01",
-        "end_date": "2026-08-08",
+        "end_date": "2026-10-01",
         "cloud_cover_threshold": 30
     },
     "scene": {
-        "scene_id": "S2C_36MZE_20260115_0_L2A",
+        "scene_id": "S2C_36MXE_20260115_0_L2A",
         "collection": "sentinel-2-l2a",
-        "datetime": "2026-01-15T08:10:08.706000Z",
-        "cloud_cover": 0.000148,
+        "datetime": "2026-01-15T08:10:15.303000Z",
+        "cloud_cover": 9.6e-05,
         "platform": "sentinel-2c",
         "constellation": "sentinel-2",
         "processing_level": null
@@ -25,11 +25,11 @@
         "crs": "EPSG:32736",
         "epsg": 32736,
         "width": 202,
-        "height": 201,
+        "height": 200,
         "bbox": [
-            35.694853,
-            -0.991375,
-            36.356201,
+            33.898647,
+            -0.993262,
+            34.885349,
             -9e-06
         ]
     },
@@ -42,7 +42,7 @@
         "output_format": "COG"
     },
     "outputs": {
-        "cog": "ndvi.tif",
-        "rgb_preview": null
+        "cog": "rgb.tif",
+        "rgb_preview": "rgb_preview.png"
     }
 }

@@ -17,9 +17,6 @@ from datetime import date
 
 
 
-from pathlib import Path
-import sys
-
 # Allow Python to find the local "eo" package
 sys.path.append(
     str(Path(__file__).resolve().parents[1] / "src")
@@ -27,6 +24,18 @@ sys.path.append(
 from eo.processor import process_data
 from eo.indices import calculate_ndvi
 from eo.composites import create_rgb
+
+
+
+
+# Add the src directory to Python's import path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+
+sys.path.insert(0, str(SRC_PATH))
+
+from eo.metadata import create_metadata, save_metadata
+
 
 
 from eo.sentinel2 import (
@@ -333,33 +342,24 @@ elif process == "NDVI":
 # 14. EXPORT REQUESTED PROCESS AS COG
 # ============================================================
 
+# Create metadata for the selected product
 if process == "RGB":
-
-    print("\nExporting RGB as COG...")
-
-    export_cog(
-        rgb_stack,
-        "rgb.tif"
-    )
-
-    print("RGB COG saved as rgb.tif")
-
-
+    output_file = "rgb.tif"
 elif process == "NDVI":
+    output_file = "ndvi.tif"
 
-    print("\nExporting NDVI as COG...")
+metadata = create_metadata(
+    best_item=best_item,
+    data=data,
+    process=process,
+    output_path=output_file,
+)
 
-    export_cog(
-        ndvi,
-        "ndvi.tif"
-    )
-
-    print("NDVI COG saved as ndvi.tif")
-
-    print("RGB preview saved as rgb_preview.png")
-
-else:
-    print("\nRGB preview skipped for NDVI.")
+# Save the metadata manifest
+manifest_path = save_metadata(
+    metadata,
+    "metadata.json",
+)
 
 # ============================================================
 # 15. CREATE PROCESSING METADATA
