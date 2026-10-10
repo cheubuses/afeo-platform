@@ -120,25 +120,26 @@ The current pipeline follows these steps:
 
 The workflow accepts the following inputs:
 
-| Input        | Data type | Description                                 |
-| ------------ | --------- | ------------------------------------------- |
-| `latitude`   | Float     | Latitude of the AOI centre                  |
-| `longitude`  | Float     | Longitude of the AOI centre                 |
-| `radius_km`  | Float     | Approximate radius of the AOI in kilometres |
-| `start_date` | String    | Beginning of the satellite search period    |
-| `end_date`   | String    | End of the satellite search period          |
-| `process`    | String    | Requested product: `RGB` or `NDVI`          |
+| Input        | Data type | Description                                 
+ ------------ | --------- | ------------------------------------------- 
+ `latitude`   | Float     | Latitude of the AOI centre                  
+`longitude`  | Float     | Longitude of the AOI centre                 
+`radius_km`  | Float     | Approximate radius of the AOI in kilometres 
+`start_date` | String    | Beginning of the satellite search period    
+ `end_date`   | String    | End of the satellite search period          
+ `process`    | String    | Requested product: `RGB` or `NDVI`          
 
-Example inputs:
+# Inputs Example
 
-```text
 Enter latitude: -0.3035
 Enter longitude: 36.0170
 Enter processing radius in km: 10
 Enter start date (YYYY-MM-DD): 2026-06-01
 Enter end date (YYYY-MM-DD): 2026-09-30
 Select processing option (RGB or NDVI): NDVI
-```
+
+
+
 
 The coordinates above are an example. Users can supply coordinates for their own areas of interest.
 
@@ -168,11 +169,11 @@ The scene-selection function ranks the returned scenes by their reported `eo:clo
 
 The RGB product uses these Sentinel-2 spectral bands:
 
-| Display channel | Spectral band |
-| --------------- | ------------- |
-| Red             | B04           |
-| Green           | B03           |
-| Blue            | B02           |
+    Display channel  Spectral band 
+---------------  ------------- 
+    Red              B04           
+    Green            B03           
+    Blue             B02           
 
 The bands are loaded through the named variables `red`, `green`, and `blue`, then combined into an XArray array with a `band` dimension.
 
@@ -239,25 +240,21 @@ The COG format supports efficient access to raster data through HTTP range reque
 
 These design choices provide a foundation for scaling the workflow and integrating it into a cloud-hosted EO service. They do not, by themselves, guarantee that every processing step is lazy or that the complete workflow runs on distributed infrastructure.
 
-## 12. Running the Workflow
+##  12. Running the Workflow
 
-Activate the project's Python virtual environment and navigate to the project root.
-
-```bash
+Activate the project's Python virtual environment and navigate to the project root
+1. Activate the workflow:
 cd ~/eo-platform
-```
-
-Run the workflow:
-
-```bash
+2. Run the workflow:
 python notebooks/aoi_test.py
-```
+
 
 Provide the requested coordinates, radius, date range, and processing option when prompted.
 
 The workflow will search for imagery, select a scene, process the requested product, export the COG, and write the metadata file if all processing steps complete successfully.
 
-## 13. Current Development Status
+
+# 13. Current Development Status
 
 ### Implemented
 
@@ -287,7 +284,7 @@ The workflow will search for imagery, select a scene, process the requested prod
 10. Integrate the processing engine with the EO platform frontend.
 
 
-## 15. Project Vision
+## 14. Project Vision
 
 The long-term objective is to develop a reusable and extensible EO processing engine that makes satellite-derived information easier to request and consume through a web interface.
 
