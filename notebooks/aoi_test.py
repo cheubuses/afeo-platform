@@ -4,74 +4,53 @@
 # ============================================================
 
 # ============================================================
-# 1. IMPORT LIBRARIES
+# 1. IMPORT LIBRARIES AND CONFIGURE PROJECT PATH
 # ============================================================
 
 from pathlib import Path
 import sys
+
+# Locate the project root and src directory
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+
+# Allow Python to find the eo package
+sys.path.insert(0, str(SRC_PATH))
+
+# Import project modules only after setting the path
+from eo.sentinel2 import search_sentinel2,  select_best_scene, load_sentinel2_items, load_sentinel2
+from eo.processor import process_data
+from eo.indices import calculate_ndvi
+from eo.composites import create_rgb
+from eo.metadata import create_metadata, save_metadata
+from eo.export import export_cog
+from eo.stac import connect_to_catalog
+
+# Other libraries
 import math
 import numpy as np
 import rioxarray
 import matplotlib.pyplot as plt
 from datetime import date
+from shapely.geometry import box
+from odc.stac import configure_s3_access, stac_load
 
 
 
-# Allow Python to find the local "eo" package
-sys.path.append(
-    str(Path(__file__).resolve().parents[1] / "src")
-)
-from eo.processor import process_data
-from eo.indices import calculate_ndvi
-from eo.composites import create_rgb
-
-
-
-
-# Add the src directory to Python's import path
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_PATH = PROJECT_ROOT / "src"
-
-sys.path.insert(0, str(SRC_PATH))
-
-from eo.metadata import create_metadata, save_metadata
-
-
-
-from eo.sentinel2 import (
-    search_sentinel2,
-    select_best_scene,
-    load_sentinel2
-)
-
-from eo.export import export_cog
 # Allowing Python to find the local "eo" package
 
 sys.path.append(
     str(Path(__file__).resolve().parents[1] / "src")
 )
 
-from shapely.geometry import box
-
-
-
-from odc.stac import (
-    stac_load,
-    configure_s3_access
-)
-
-from eo.stac import connect_to_catalog
-
-
 # ============================================================
 # 2. CONFIGURE AWS ACCESS 
-# Its a fuction provided by odc.stac that configures access to cloud-hosted satellite data.
-# ============================================================
 
+# ============================================================
+# Its a fuction provided by odc.stac that configures access to cloud-hosted satellite data.
 configure_s3_access(
     aws_unsigned=True
 )
-
 
 # ============================================================
 # 3. USER INPUTS
@@ -92,13 +71,41 @@ longitude = float(
 radius_km = float(
     input("Enter processing radius in km: ")
 )
-start_date = input(
-    "Enter start date (YYYY-MM-DD): "
-).strip()
+# Monthly composite date selection
+year = int(input("Enter year (e.g. 2026): "))
+month = int(input("Enter month (1-12): "))
 
-end_date = input(
-    "Enter end date (YYYY-MM-DD): "
-).strip()
+if month < 1 or month > 12:
+    raise ValueError("Month must be between 1 and 12.")
+
+from datetime import date, timedelta
+
+start_date = date(year, month, 1)
+
+if month == 12:
+    next_month = date(year + 1, 1, 1)
+else:
+    next_month = date(year, month + 1, 1)
+
+end_date = next_month - timedelta(days=1)
+
+# Convert dates to strings for the STAC search
+start_date = start_date.isoformat()
+end_date = end_date.isoformat()
+
+print("Start date:", start_date)
+print("End date:", end_date)
+
+# Select compositing method
+composite_method = input(
+    "Choose composite method (median/mean): "
+).strip().lower()
+
+if composite_method not in ["median", "mean"]:
+    raise ValueError("Choose median or mean.")
+cloud_cover = float(
+    input("Enter maximum scene cloud cover (%): ")
+)
 
 
 # Validate the dates
@@ -175,46 +182,27 @@ print("STAC connection successful.")
 # 6. SEARCH SENTINEL-2
 # ============================================================
 
-print("\nSearching for Sentinel-2 imagery...")
-
 items = search_sentinel2(
-    catalog,
-    geometry,
-    start_date,
-    end_date,
-    30
+    catalog, geometry, start_date, end_date, cloud_cover
 )
 
-print(
-    f"Number of scenes found: {len(items)}"
-)
 
 # ============================================================
 # 7. CHECK SEARCH RESULTS
 # ============================================================
 
-if len(items) == 0:
-
-    raise RuntimeError(
-        "No Sentinel-2 scenes were found for "
-        "the selected location and date range."
-    )
-
-
 print("\nAvailable scenes:")
 
 for item in items:
-
-    cloud_cover = item.properties.get(
+    scene_cloud_cover = item.properties.get(
         "eo:cloud_cover",
         100
     )
 
     print(
         f"{item.id} | "
-        f"Cloud cover: {cloud_cover:.2f}%"
+        f"Cloud cover: {scene_cloud_cover:.2f}%"
     )
-
 
 # ============================================================
 # 8. SELECT BEST SCENE
@@ -261,18 +249,15 @@ print(best_item.geometry)
 
 
 # ============================================================
-# 9. LOAD SENTINEL-2 BANDS
+# 9. LOAD MULTIPLE SENTINEL-2 SCENES
 # ============================================================
 
-print("\nLoading Sentinel-2 imagery...")
+print("\nLoading Sentinel-2 scenes for compositing...")
 
-data = load_sentinel2(
-    best_item,
-    geometry
-)
+data = load_sentinel2_items(items, geometry)
 
-print("Sentinel-2 data loaded successfully.")
-
+print("Sentinel-2 scenes loaded successfully.")
+print(data)
 
 # ============================================================
 # 10. INSPECT DATA
@@ -292,10 +277,33 @@ print(data.rio.crs)
 
 
 # ============================================================
-# 11. SELECT FIRST TIME SLICE
+# 11. CREATE TEMPORAL MEDIAN COMPOSITE
 # ============================================================
 
-data = data.isel(time=0)
+print("\nCreating temporal median composite...")
+
+
+from eo.composites import create_temporal_composite
+
+print(
+    f"\nCreating monthly {composite_method} composite..."
+)
+
+data = data[
+    ["red", "green", "blue", "nir"]
+]
+
+data = create_temporal_composite(
+    data,
+    method=composite_method
+)
+
+print("Monthly composite created successfully.")
+print(data)
+
+
+print("Temporal median composite created successfully.")
+print(data)
 
 
 # ============================================================
@@ -314,6 +322,7 @@ rgb = data[
 
 
 
+
 # ============================================================
 # 13. RUN REQUESTED EO PROCESS
 # ============================================================
@@ -322,6 +331,11 @@ process = input(
     "\nSelect processing option (RGB or NDVI): "
 ).strip().upper()
 
+if process not in ["RGB", "NDVI"]:
+    raise ValueError(
+        "Invalid process. Choose RGB or NDVI."
+    )
+
 print(f"\nRunning process: {process}")
 
 result = process_data(
@@ -329,40 +343,101 @@ result = process_data(
     process
 )
 
-if process == "RGB":
-    rgb_stack = result
-    print("RGB composite created successfully.")
+print(f"{process} processing completed successfully.")
 
-elif process == "NDVI":
-    ndvi = result
-    print("NDVI calculated successfully.")
+print("\nResult:")
+print(result)
 
 
 # ============================================================
 # 14. EXPORT REQUESTED PROCESS AS COG
 # ============================================================
 
-# Create metadata for the selected product
-if process == "RGB":
-    output_file = "rgb.tif"
-elif process == "NDVI":
-    output_file = "ndvi.tif"
+from pathlib import Path
 
-metadata = create_metadata(
-    best_item=best_item,
-    data=data,
-    process=process,
-    output_path=output_file,
+# Create output directory
+OUTPUT_DIR = PROJECT_ROOT / "outputs"
+OUTPUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True
 )
 
-# Save the metadata manifest
-manifest_path = save_metadata(
-    metadata,
-    "metadata.json",
+# Define output filename
+output_file = OUTPUT_DIR / (
+    "rgb.tif" if process == "RGB"
+    else "ndvi.tif"
 )
+
+print(f"\nExporting {process} as Cloud Optimized GeoTIFF...")
+
+exported_file = export_cog(
+    result,
+    str(output_file)
+)
+
+print("COG export completed successfully.")
+print("Output file:", exported_file)
+
+
 
 # ============================================================
-# 15. CREATE PROCESSING METADATA
+# 15. GENERATE AND EXPORT RGB PREVIEW PNG
+# ============================================================
+
+if process == "RGB":
+
+    print("\nGenerating RGB preview...")
+
+    # Extract the RGB bands from the result
+    red = result.sel(band="red") if "band" in result.dims else result["red"]
+    green = result.sel(band="green") if "band" in result.dims else result["green"]
+    blue = result.sel(band="blue") if "band" in result.dims else result["blue"]
+
+    # Convert bands to NumPy arrays
+    red_array = red.compute().values
+    green_array = green.compute().values
+    blue_array = blue.compute().values
+
+    # Apply percentile stretching for visualization
+    def stretch_band(band):
+        low, high = np.nanpercentile(band, [2, 98])
+
+        if high <= low:
+            return np.zeros(band.shape, dtype=np.uint8)
+
+        stretched = (band - low) / (high - low)
+        return np.clip(stretched * 255, 0, 255).astype(np.uint8)
+
+    rgb_image = np.dstack([
+        stretch_band(red_array),
+        stretch_band(green_array),
+        stretch_band(blue_array)
+    ])
+
+    # Save the PNG preview
+    preview_path = OUTPUT_DIR / "rgb_preview.png"
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(rgb_image)
+    plt.axis("off")
+    plt.title("Sentinel-2 RGB Composite")
+    plt.savefig(
+        preview_path,
+        dpi=150,
+        bbox_inches="tight",
+        pad_inches=0
+    )
+    plt.close()
+
+    print("RGB preview saved:", preview_path)
+
+else:
+    preview_path = None
+    print("PNG preview skipped: NDVI was selected.")
+
+
+# ============================================================
+# 16. CREATE PROCESSING METADATA
 # ============================================================
 
 import json
@@ -386,7 +461,7 @@ metadata = {
         "date_range": f"{start_date}/{end_date}",
         "start_date": start_date,
         "end_date": end_date,
-        "cloud_cover_threshold": 30
+        "cloud_cover_threshold": cloud_cover
     },
 
     # --------------------------------------------------------
@@ -454,7 +529,7 @@ metadata = {
 
 
 # ============================================================
-# 20. SAVE METADATA JSON
+# 17. SAVE METADATA JSON
 # ============================================================
 
 with open(

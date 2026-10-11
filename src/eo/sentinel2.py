@@ -75,3 +75,20 @@ def load_sentinel2(
     )
 
     return data
+
+
+def load_sentinel2_items(items, geometry):
+    """
+    Load multiple Sentinel-2 scenes for temporal compositing.
+    Data are loaded lazily using Dask.
+    """
+
+    data = stac_load(
+        list(items),
+        bands=["red", "green", "blue", "nir", "scl"],
+        geopolygon=geometry,
+        chunks={"x": 512, "y": 512},
+        groupby="solar_day"
+    )
+
+    return data

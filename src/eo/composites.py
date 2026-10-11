@@ -29,3 +29,39 @@ def create_rgb(data):
     )
 
     return rgb_stack
+
+
+
+
+def create_temporal_composite(data, method="median"):
+    """
+    Create a monthly temporal composite using
+    either median or mean across the time dimension.
+    """
+
+    method = method.strip().lower()
+
+    if "time" not in data.dims:
+        raise ValueError(
+            "The input dataset must contain a time dimension."
+        )
+
+    if method == "median":
+        composite = data.median(
+            dim="time",
+            skipna=True
+        )
+
+    elif method == "mean":
+        composite = data.mean(
+            dim="time",
+            skipna=True
+        )
+
+    else:
+        raise ValueError(
+            "Invalid composite method. "
+            "Choose 'median' or 'mean'."
+        )
+
+    return composite

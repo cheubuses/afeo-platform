@@ -28,6 +28,14 @@ def create_metadata(best_item, data, process, output_path):
                 "processing:level"
             ),
         },
+        "temporal_composite": {
+            "frequency": "monthly",
+            "year": year,
+            "month": month,
+            "method": composite_method,
+            "start_date": start_date,
+            "end_date": end_date
+},
         "spatial": {
             "epsg": best_item.properties.get("proj:epsg"),
             "crs": str(data.rio.crs),
@@ -64,3 +72,5 @@ def save_metadata(metadata, output_path="metadata.json"):
     print(f"Metadata saved as {output_path}")
 
     return output_path
+
+

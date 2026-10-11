@@ -1,36 +1,36 @@
 {
     "input": {
-        "latitude": -0.3034,
-        "longitude": 34.0167,
-        "radius_km": 1.0
+        "latitude": -3.0,
+        "longitude": 36.0,
+        "radius_km": 2.0
     },
     "stac_search": {
         "catalog": "Earth Search",
         "collection": "sentinel-2-l2a",
-        "date_range": "2026-01-01/2026-10-01",
-        "start_date": "2026-01-01",
-        "end_date": "2026-10-01",
-        "cloud_cover_threshold": 30
+        "date_range": "2025-12-01/2025-12-31",
+        "start_date": "2025-12-01",
+        "end_date": "2025-12-31",
+        "cloud_cover_threshold": 15.0
     },
     "scene": {
-        "scene_id": "S2C_36MXE_20260115_0_L2A",
+        "scene_id": "S2A_36MZB_20251225_0_L2A",
         "collection": "sentinel-2-l2a",
-        "datetime": "2026-01-15T08:10:15.303000Z",
-        "cloud_cover": 9.6e-05,
-        "platform": "sentinel-2c",
+        "datetime": "2025-12-25T08:01:15.635000Z",
+        "cloud_cover": 8.198778,
+        "platform": "sentinel-2a",
         "constellation": "sentinel-2",
         "processing_level": null
     },
     "spatial": {
         "crs": "EPSG:32736",
         "epsg": 32736,
-        "width": 202,
-        "height": 200,
+        "width": 403,
+        "height": 401,
         "bbox": [
-            33.898647,
-            -0.993262,
-            34.885349,
-            -9e-06
+            35.697855,
+            -3.703395,
+            36.687676,
+            -2.708544
         ]
     },
     "processing": {
