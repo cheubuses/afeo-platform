@@ -302,31 +302,60 @@ preview_file = OUTPUT_DIR / (
 
 if process == "RGB":
 
-    # This assumes process_data(..., "RGB") returns a Dataset
-    # with separate red, green and blue variables.
+   
+    # RGB processing returns a DataArray with dimensions:
+    # band, y, x
     rgb_data = result.compute()
 
+    print("RGB dimensions:", rgb_data.dims)
+    print("Band labels:", rgb_data.coords["band"].values)
+
+    # Extract the bands by position.
+    # This assumes create_rgb() stacks red, green, blue in that order.
+    rgb_data = rgb_data.transpose("band", "y", "x")
+
+    if rgb_data.sizes["band"] != 3:
+        raise ValueError(
+            f"Expected 3 RGB bands, got {rgb_data.sizes['band']}."
+        )
+
+    
+    # Extract bands using their confirmed labels
+    band_labels = [
+        str(label)
+        for label in rgb_data.coords["band"].values
+    ]
+
+    expected_bands = ["red", "green", "blue"]
+
+    if band_labels != expected_bands:
+        raise ValueError(
+            f"Unexpected RGB band order: {band_labels}. "
+            f"Expected {expected_bands}."
+        )
+
     bands = [
-        np.asarray(rgb_data[band].values, dtype=np.float32).squeeze()
-        for band in ["red", "green", "blue"]
+        np.asarray(
+            rgb_data.sel(band=band).values,
+            dtype=np.float32,
+        ).squeeze()
+        for band in expected_bands
     ]
 
     if any(band.ndim != 2 for band in bands):
-        raise ValueError(
-            "RGB preview requires 2D red, green and blue bands. "
-            "Check the dimensions returned by process_data()."
-        )
+        raise ValueError("Each RGB band must be a 2D array.")
 
     if not (bands[0].shape == bands[1].shape == bands[2].shape):
         raise ValueError("RGB bands have different spatial shapes.")
 
+    # Shape: (height, width, 3)
     rgb_array = np.stack(bands, axis=-1)
 
-    # Reject non-finite and negative reflectance values.
     valid_rgb = (
         np.isfinite(rgb_array).all(axis=-1)
         & (rgb_array >= 0).all(axis=-1)
     )
+
 
     rgb_display = np.zeros_like(rgb_array, dtype=np.float32)
 
