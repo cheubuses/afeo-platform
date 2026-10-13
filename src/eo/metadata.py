@@ -46,16 +46,24 @@ def create_metadata(best_item, data, process, output_path):
         },
         "processing": {
             "product_type": process,
+            "ndvi": process == "NDVI",
             "method": (
                 "RGB composite"
                 if process == "RGB"
                 else "NDVI = (NIR - Red) / (NIR + Red)"
+                if process == "NDVI"
+                else "Unknown processing method"
             ),
         },
-        "output": {
-            "local_path": str(output_path),
-            "format": "COG",
-        },
+        "outputs": {
+    "cog": output_file.name,
+    "rgb_preview": (
+        "rgb_preview.png" if process == "RGB" else None
+    ),
+    "ndvi_preview": (
+        "ndvi_preview.png" if process == "NDVI" else None
+    )
+}
     }
 
     return metadata
@@ -72,5 +80,4 @@ def save_metadata(metadata, output_path="metadata.json"):
     print(f"Metadata saved as {output_path}")
 
     return output_path
-
 
