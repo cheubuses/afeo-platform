@@ -32,6 +32,14 @@ if str(SRC_PATH) not in sys.path:
 
 # Project modules.
 from eo.stac import connect_to_catalog
+
+from eo.aoi import (
+    list_admin1,
+    list_admin2,
+    list_admin3,
+    get_admin_geometry,
+)
+
 from eo.sentinel2 import (
     search_sentinel2,
     select_best_scene,
@@ -49,6 +57,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 configure_s3_access(aws_unsigned=True)
 
 
+
 # ============================================================
 # 2. COLLECT AND VALIDATE USER INPUTS
 # ============================================================
@@ -57,20 +66,216 @@ print("\n==========================================")
 print("       Sentinel-2 EO Processing")
 print("==========================================\n")
 
-latitude = float(input("Enter latitude: "))
-longitude = float(input("Enter longitude: "))
-radius_km = float(input("Enter processing radius in km: "))
+print("Select AOI input method:")
+print("1. Administrative area from FieldMaps GeoParquet")
+print("2. Latitude, longitude and radius")
 
-if not -90 <= latitude <= 90:
-    raise ValueError("Latitude must be between -90 and 90.")
+aoi_mode = input("Enter choice (1 or 2): ").strip()
 
-if not -180 <= longitude <= 180:
-    raise ValueError("Longitude must be between -180 and 180.")
+# Metadata fields: populated according to the selected AOI method.
+latitude = None
+longitude = None
+radius_km = None
 
-if radius_km <= 0:
-    raise ValueError("Processing radius must be greater than zero.")
+country_code = None
+admin_level = None
+admin1_name = None
+admin2_name = None
+admin3_name = None
 
-# Monthly date selection.
+
+    # Keep your existing stac_search, scene, spatial,
+    # processing and outputs entries below.
+
+
+if aoi_mode == "1":
+
+    country_code = (
+        input("Enter country code (default KEN): ").strip().upper()
+        or "KEN"
+    )
+
+    print("\nSelect administrative level:")
+    print("1. Admin 1 (e.g. county)")
+    print("2. Admin 2 (e.g. sub-county)")
+    print("3. Admin 3 (e.g. ward)")
+
+    admin_level = int(input("Enter level (1, 2 or 3): ").strip())
+
+    if admin_level not in (1, 2, 3):
+        raise ValueError("Administrative level must be 1, 2 or 3.")
+
+    # --------------------------------------------------------
+    # Select Admin 1
+    # --------------------------------------------------------
+
+    admin1_options = list_admin1(country_code)
+
+    if not admin1_options:
+        raise RuntimeError(
+            f"No Admin 1 areas found for {country_code}."
+        )
+
+    print("\nAvailable Admin 1 areas:")
+
+    for index, name in enumerate(admin1_options, start=1):
+        print(f"{index}. {name}")
+
+    selection = int(
+        input("\nSelect Admin 1 by number: ").strip()
+    )
+
+    if not 1 <= selection <= len(admin1_options):
+        raise ValueError("Invalid Admin 1 selection.")
+
+    admin1_name = admin1_options[selection - 1]
+
+    # --------------------------------------------------------
+    # Select Admin 2, if requested
+    # --------------------------------------------------------
+
+    if admin_level >= 2:
+
+        admin2_options = list_admin2(
+            admin1_name,
+            country_code,
+        )
+
+        if not admin2_options:
+            raise RuntimeError(
+                f"No Admin 2 areas found within {admin1_name}."
+            )
+
+        print(f"\nAdmin 2 areas within {admin1_name}:")
+
+        for index, name in enumerate(admin2_options, start=1):
+            print(f"{index}. {name}")
+
+        selection = int(
+            input("\nSelect Admin 2 by number: ").strip()
+        )
+
+        if not 1 <= selection <= len(admin2_options):
+            raise ValueError("Invalid Admin 2 selection.")
+
+        admin2_name = admin2_options[selection - 1]
+
+    # --------------------------------------------------------
+    # Select Admin 3, if requested
+    # --------------------------------------------------------
+
+    if admin_level == 3:
+
+        admin3_options = list_admin3(
+            admin1_name,
+            admin2_name,
+            country_code,
+        )
+
+        if not admin3_options:
+            raise RuntimeError(
+                f"No Admin 3 areas found within {admin2_name}."
+            )
+
+        print(f"\nAdmin 3 areas within {admin2_name}:")
+
+        for index, name in enumerate(admin3_options, start=1):
+            print(f"{index}. {name}")
+
+        selection = int(
+            input("\nSelect Admin 3 by number: ").strip()
+        )
+
+        if not 1 <= selection <= len(admin3_options):
+            raise ValueError("Invalid Admin 3 selection.")
+
+        admin3_name = admin3_options[selection - 1]
+
+    # --------------------------------------------------------
+    # Retrieve the selected administrative geometry
+    # --------------------------------------------------------
+
+    aoi_shape = get_admin_geometry(
+        level=admin_level,
+        country_code=country_code,
+        admin1_name=admin1_name,
+        admin2_name=admin2_name,
+        admin3_name=admin3_name,
+    )
+
+    # Convert the Shapely geometry to GeoJSON-style mapping
+    # for the existing STAC search workflow.
+    geometry = aoi_shape.__geo_interface__
+
+    print("\nSelected administrative AOI:")
+    print(f"Country: {country_code}")
+    print(f"Admin level: {admin_level}")
+    print(f"Admin 1: {admin1_name}")
+
+    if admin2_name:
+        print(f"Admin 2: {admin2_name}")
+
+    if admin3_name:
+        print(f"Admin 3: {admin3_name}")
+
+    print(f"Geometry type: {aoi_shape.geom_type}")
+    print(f"Geometry valid: {aoi_shape.is_valid}")
+    print(f"Geometry bounds: {aoi_shape.bounds}")
+
+elif aoi_mode == "2":
+
+    latitude = float(input("Enter latitude: "))
+    longitude = float(input("Enter longitude: "))
+    radius_km = float(
+        input("Enter processing radius in km: ")
+    )
+
+    if not -90 <= latitude <= 90:
+        raise ValueError("Latitude must be between -90 and 90.")
+
+    if not -180 <= longitude <= 180:
+        raise ValueError("Longitude must be between -180 and 180.")
+
+    if radius_km <= 0:
+        raise ValueError(
+            "Processing radius must be greater than zero."
+        )
+
+    lat_offset = radius_km / 111.0
+
+    cos_latitude = abs(
+        math.cos(math.radians(latitude))
+    )
+
+    if cos_latitude < 1e-6:
+        raise ValueError(
+            "This radius-based bounding box is unsuitable near the poles."
+        )
+
+    lon_offset = radius_km / (111.0 * cos_latitude)
+
+    min_lon = longitude - lon_offset
+    max_lon = longitude + lon_offset
+    min_lat = max(-90.0, latitude - lat_offset)
+    max_lat = min(90.0, latitude + lat_offset)
+
+    aoi_shape = box(
+        min_lon, min_lat, max_lon, max_lat
+    )
+
+    geometry = aoi_shape.__geo_interface__
+
+    print("\nCoordinate-based AOI bounding box:")
+    print(f"Longitude: {min_lon:.6f} to {max_lon:.6f}")
+    print(f"Latitude:  {min_lat:.6f} to {max_lat:.6f}")
+
+else:
+    raise ValueError("Choose AOI input method 1 or 2.")
+
+# ============================================================
+# 2A. MONTHLY DATE AND PROCESSING INPUTS
+# ============================================================
+
 year = int(input("Enter year (e.g. 2026): "))
 month = int(input("Enter month (1-12): "))
 
@@ -111,9 +316,21 @@ if process not in {"RGB", "NDVI"}:
     raise ValueError("Choose either RGB or NDVI.")
 
 print("\nUser inputs:")
-print(f"Latitude: {latitude}")
-print(f"Longitude: {longitude}")
-print(f"Radius: {radius_km} km")
+print(f"AOI mode: {aoi_mode}")
+
+if admin1_name is not None:
+    print(f"Admin 1: {admin1_name}")
+
+if admin2_name is not None:
+    print(f"Admin 2: {admin2_name}")
+
+if admin3_name is not None:
+    print(f"Admin 3: {admin3_name}")
+else:
+    print(f"Latitude: {latitude}")
+    print(f"Longitude: {longitude}")
+    print(f"Radius: {radius_km} km")
+
 print(f"Date range: {start_date} to {end_date}")
 print(f"Composite method: {composite_method}")
 print(f"Maximum scene cloud cover: {cloud_cover}%")
@@ -121,34 +338,10 @@ print(f"Requested product: {process}")
 
 
 # ============================================================
-# 3. CREATE AREA OF INTEREST (AOI)
+# 3. AOI READY FOR STAC SEARCH
 # ============================================================
 
-lat_offset = radius_km / 111.0
-
-cos_latitude = abs(math.cos(math.radians(latitude)))
-
-if cos_latitude < 1e-6:
-    raise ValueError(
-        "This radius-based bounding box is unsuitable near the poles."
-    )
-
-lon_offset = radius_km / (111.0 * cos_latitude)
-
-min_lon = longitude - lon_offset
-max_lon = longitude + lon_offset
-min_lat = max(-90.0, latitude - lat_offset)
-max_lat = min(90.0, latitude + lat_offset)
-
-# GeoJSON-style geometry for STAC searches.
-geometry = box(
-    min_lon, min_lat, max_lon, max_lat
-).__geo_interface__
-
-print("\nAOI bounding box:")
-print(f"Longitude: {min_lon:.6f} to {max_lon:.6f}")
-print(f"Latitude:  {min_lat:.6f} to {max_lat:.6f}")
-
+print("\nAOI geometry prepared for STAC search.")
 
 # ============================================================
 # 4. CONNECT TO EARTH SEARCH STAC
@@ -175,6 +368,33 @@ items = search_sentinel2(
     cloud_cover,
 )
 
+# ============================================================
+# DIAGNOSTIC: INSPECT SOURCE ASSET METADATA
+# ============================================================
+
+item = items[0]
+
+print("\nSTAC collection:", item.collection_id)
+print("Available assets:", list(item.assets.keys()))
+
+for band_name in ("red", "nir"):
+    asset = item.assets.get(band_name)
+
+    if asset is None:
+        print(f"\n{band_name.upper()} asset not found.")
+        continue
+
+    raster_bands = asset.extra_fields.get("raster:bands") or []
+
+    print(f"\n{band_name.upper()} asset:")
+    print("Raster band metadata:", raster_bands)
+
+    if raster_bands:
+        print("Scale:", raster_bands[0].get("scale"))
+        print("Offset:", raster_bands[0].get("offset"))
+    else:
+        print("Scale and offset are not specified in this asset metadata.")
+        
 if not items:
     raise RuntimeError(
         "No Sentinel-2 scenes matched the AOI, date range, "
@@ -219,6 +439,23 @@ print(f"Scene cloud cover: {best_cloud_cover}")
 print("\nLoading Sentinel-2 scenes for compositing...")
 
 data = load_sentinel2_items(items, geometry)
+
+# Diagnostic: inspect loaded reflectance bands before NDVI calculation.
+for band_name in ["red", "nir"]:
+    band = data[band_name]
+
+    print(f"\n--- {band_name.upper()} band ---")
+    print("Data type:", band.dtype)
+    print("Attributes:", band.attrs)
+
+    sample = band.isel(time=0).compute().values
+    valid = sample[np.isfinite(sample)]
+
+    if valid.size:
+        print("Minimum:", float(valid.min()))
+        print("Maximum:", float(valid.max()))
+        print("Mean:", float(valid.mean()))
+
 
 if data is None:
     raise RuntimeError("Sentinel-2 data loading returned no dataset.")
@@ -275,20 +512,80 @@ print(f"{process} processing completed successfully.")
 print(result)
 
 
+
+
 # ============================================================
-# 10. EXPORT THE PRODUCT AS A COG
+# 10. EXPORT THE REQUESTED EO PRODUCT AS A COG
 # ============================================================
 
-output_file = OUTPUT_DIR / (
-    "rgb.tif" if process == "RGB" else "ndvi.tif"
-)
+if process == "RGB":
+    output_file = OUTPUT_DIR / "rgb.tif"
+elif process == "NDVI":
+    output_file = OUTPUT_DIR / "ndvi.tif"
+else:
+    raise ValueError(f"Unsupported processing option: {process}")
 
-print(f"\nExporting {process} as a Cloud Optimized GeoTIFF...")
+print(f"\nExporting {process} product to: {output_file}")
 
-exported_file = export_cog(result, output_file)
+export_cog(result, output_file)
 
-print("COG export completed:", exported_file)
+print("COG export completed.")
 
+# ============================================================
+# 10A. REPORT VALID AND NODATA PIXEL COUNTS
+# ============================================================
+
+import rasterio
+import numpy as np
+
+print("\n==========================================")
+print("       OUTPUT PIXEL QUALITY REPORT")
+print("==========================================")
+
+with rasterio.open(output_file) as src:
+
+    nodata_value = src.nodata
+    band_count = src.count
+    height = src.height
+    width = src.width
+
+    print(f"Output file: {output_file.name}")
+    print(f"Raster dimensions: {width} x {height}")
+    print(f"Number of bands: {band_count}")
+    print(f"NoData value: {nodata_value}")
+
+    total_pixels = height * width
+
+    for band_index in range(1, band_count + 1):
+
+        # Read one band and its validity mask.
+        band = src.read(band_index, masked=True)
+
+        valid_mask = (
+            ~np.ma.getmaskarray(band)
+            & np.isfinite(band.data)
+        )
+
+        valid_count = int(np.count_nonzero(valid_mask))
+        nodata_count = total_pixels - valid_count
+
+        print(f"\nBand {band_index}:")
+
+        if src.descriptions[band_index - 1]:
+            print(f"Band name: {src.descriptions[band_index - 1]}")
+
+        print(f"Valid pixels: {valid_count:,}")
+        print(f"NoData pixels: {nodata_count:,}")
+        print(
+            f"Valid percentage: "
+            f"{valid_count / total_pixels * 100:.2f}%"
+        )
+        print(
+            f"NoData percentage: "
+            f"{nodata_count / total_pixels * 100:.2f}%"
+        )
+
+print("==========================================")
 
 # ============================================================
 # 11. CREATE THE REQUESTED PNG PREVIEW
@@ -443,12 +740,22 @@ print("Preview saved:", preview_file)
 
 crs = data.rio.crs
 
+crs = data.rio.crs
+
 metadata = {
     "input": {
         "latitude": latitude,
         "longitude": longitude,
         "radius_km": radius_km,
+        "country_code": country_code,
+        "admin_level": admin_level,
+        "admin1_name": admin1_name,
+        "admin2_name": admin2_name,
+        "admin3_name": admin3_name,
     },
+
+    # Your existing stac_search, scene, spatial,
+    # processing and outputs sections follow here.,
 
     "stac_search": {
         "catalog": "Earth Search",
@@ -458,7 +765,7 @@ metadata = {
         "cloud_cover_threshold": cloud_cover,
         "matching_scene_count": len(items),
     },
-
+    
     # This is the reference scene selected from the search.
     # The temporal composite may use multiple matching scenes.
     "scene": {
@@ -476,7 +783,7 @@ metadata = {
         "epsg": crs.to_epsg() if crs else None,
         "width": data.sizes.get("x"),
         "height": data.sizes.get("y"),
-        "aoi_bbox": [min_lon, min_lat, max_lon, max_lat],
+        "aoi_bbox": list(aoi_shape.bounds),
     },
 
     "processing": {
