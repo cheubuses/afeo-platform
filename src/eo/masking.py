@@ -1,27 +1,25 @@
-
 """
 Sentinel-2 Scene Classification Layer (SCL) masking.
 
 Excluded classes:
     0  No data
     1  Saturated or defective pixels
-    2  Dark-area pixels (conservative exclusion)
+    2  Cast shadows
     3  Cloud shadows
-    7  Unclassified pixels
+    7  Unclassified (may include dark soils and burned areas)
     8  Medium-probability clouds
     9  High-probability clouds
     10 Cirrus
     11 Snow or ice
 
 Retained classes:
-    4 Vegetation
-    5 Non-vegetated land
-    6 Water
+    4  Vegetation
+    5  Non-vegetated land
+    6  Water
 
-Class 2 can include genuine dark surfaces, not just shadows.
+Class 2 is excluded to reduce shadow contamination.
 Class 7 is excluded because its classification is uncertain.
 """
-
 import numpy as np
 import xarray as xr
 import dask
@@ -188,7 +186,7 @@ def calculate_masking_statistics(
         Number of valid observations per pixel. None if there
         is no time dimension.
     """
-
+    
     if "scl" not in original:
         raise ValueError("Original dataset has no SCL band.")
 
@@ -261,3 +259,4 @@ def calculate_masking_statistics(
     }
 
     return stats, valid_count
+   

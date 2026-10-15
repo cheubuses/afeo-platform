@@ -379,6 +379,32 @@ items = search_sentinel2(
 )
 
 # ============================================================
+# DIAGNOSTIC: CHECK SENTINEL-2 OFFSET METADATA
+# ============================================================
+
+print("\nCHECKING SENTINEL-2 OFFSET METADATA")
+
+for item in items:
+    print("\nScene:", item.id)
+
+    print(
+        "Processing baseline:",
+        item.properties.get("s2:processing_baseline")
+    )
+
+    print(
+        "Earth Search BOA offset already applied:",
+        item.properties.get("earthsearch:boa_offset_applied")
+    )
+
+    for band_name in ["red", "nir"]:
+        if band_name in item.assets:
+            raster_bands = item.assets[band_name].extra_fields.get(
+                "raster:bands", []
+            )
+            print(f"{band_name.upper()} raster metadata:", raster_bands)
+
+# ============================================================
 # DIAGNOSTIC: INSPECT SOURCE ASSET METADATA
 # ============================================================
 
@@ -391,7 +417,6 @@ if not items:
 
 # Only inspect the first item after confirming items exist.
 item = items[0]
-2
 
 print("\nSTAC collection:", item.collection_id)
 print("Available assets:", list(item.assets.keys()))
@@ -474,79 +499,78 @@ for band_name in ["red", "nir"]:
         print("Zero values:", int(np.count_nonzero(finite == 0)))
         print("Negative values:", int(np.count_nonzero(finite < 0)))
 
+
 # ============================================================
 # 7A. CONVERT OPTICAL BANDS TO SURFACE REFLECTANCE
 # ============================================================
 
-# Earth Search asset metadata reports scale=0.0001
-# and offset=-0.1 for the inspected red and NIR assets.
-# Apply this transformation once to the raw DN values.
-# Keep SCL unchanged because it contains class codes.
-
 REFLECTANCE_SCALE = 0.0001
-REFLECTANCE_OFFSET = -0.1
+SOURCE_NODATA = 0
+
+# Earth Search reports whether the BOA offset was already applied.
+# Verify that all scenes have a consistent, explicit flag.
+offset_flags = {
+    item.properties.get("earthsearch:boa_offset_applied")
+    for item in items
+}
+
+if len(offset_flags) != 1 or None in offset_flags:
+    raise RuntimeError(
+        "Scenes have missing or inconsistent "
+        "earthsearch:boa_offset_applied flags. "
+        "Do not combine them until scaling is resolved."
+    )
+
+boa_offset_already_applied = offset_flags.pop()
+
+print("\nREFLECTANCE SCALING CHECK")
+print("BOA offset already applied:", boa_offset_already_applied)
 
 for band_name in ["red", "green", "blue", "nir"]:
     raw_band = data[band_name]
 
-    # Zero is the declared source NoData value.
-    valid_pixels = raw_band != 0
+    # Capture source metadata before changing the data.
+    source_attrs = dict(raw_band.attrs)
+    valid_pixels = raw_band != SOURCE_NODATA
 
-    data[band_name] = (
-        raw_band.astype("float32")
-        * REFLECTANCE_SCALE
-        + REFLECTANCE_OFFSET
-    ).where(valid_pixels)
+    # Apply scale once. Subtract the offset only if the
+    # provider has NOT already applied it to the source pixels.
+    if boa_offset_already_applied:
+        reflectance = raw_band.astype("float32") * REFLECTANCE_SCALE
+        offset_used = 0.0
+    else:
+        reflectance = (
+            raw_band.astype("float32") * REFLECTANCE_SCALE - 0.1
+        )
+        offset_used = -0.1
+
+    data[band_name] = reflectance.where(valid_pixels)
 
     data[band_name].attrs.update({
         "units": "surface reflectance",
         "scale_applied": REFLECTANCE_SCALE,
-        "offset_applied": REFLECTANCE_OFFSET,
-        "source_nodata": 0,
+        "offset_applied_in_pipeline": offset_used,
+        "earthsearch_boa_offset_already_applied":
+            boa_offset_already_applied,
+        "source_nodata": SOURCE_NODATA,
     })
 
-print("\nOptical bands converted to surface reflectance.")
-print("Applied formula: reflectance = DN * 0.0001 - 0.1")
+    print(f"\n{band_name.upper()}")
+    print("Source dtype:", raw_band.dtype)
+    print("Source attributes:", source_attrs)
+    print("Scale applied in pipeline:", REFLECTANCE_SCALE)
+    print("Additional offset in pipeline:", offset_used)
 
-# Diagnostic: inspect loaded reflectance bands before NDVI calculation.
-for band_name in ["red", "nir"]:
-    band = data[band_name]
-
-    print(f"\n--- {band_name.upper()} band ---")
-    print("Data type:", band.dtype)
-    print("Attributes:", band.attrs)
-
-    sample = band.isel(time=0).compute().values
+    sample = data[band_name].isel(time=0).compute().values
     valid = sample[np.isfinite(sample)]
 
     if valid.size:
-        print("Minimum:", float(valid.min()))
-        print("Maximum:", float(valid.max()))
-        print("Mean:", float(valid.mean()))
+        print("Reflectance minimum:", float(valid.min()))
+        print("Reflectance median:", float(np.median(valid)))
+        print("Reflectance maximum:", float(valid.max()))
 
+print("\nReflectance conversion completed.")
 
-
-
-required_bands = ["red", "green", "blue", "nir"]
-missing_bands = [
-    band for band in required_bands
-    if band not in data.data_vars
-]
-
-if missing_bands:
-    raise ValueError(
-        f"Loaded dataset is missing required bands: {missing_bands}"
-    )
-
-print("\nLoaded dataset:")
-print(data)
-
-print("\nDimensions:", data.dims)
-print("Variables:", list(data.data_vars))
-print("CRS:", data.rio.crs)
-
-
-#
 # ============================================================
 # 8. SCL MASKING, VALIDATION AND TEMPORAL COMPOSITE
 # ============================================================
@@ -567,7 +591,7 @@ if "scl" not in data.data_vars:
 before_preview_file = (
     OUTPUT_DIR / "rgb_preview_before_masking.png"
 )
-
+required_bands = ["red", "green", "blue"]
 before_composite = create_temporal_composite(
     data[required_bands],
     method=composite_method,
@@ -682,9 +706,11 @@ print(
     f"\nCreating masked monthly {composite_method} composite..."
 )
 
-# The SCL layer is no longer needed in the spectral composite.
+# Keep NIR as well as RGB because NDVI requires red and NIR.
 # NaN values from masking are ignored by mean/median.
-data = masked_data[required_bands]
+processing_bands = ["red", "green", "blue", "nir"]
+
+data = masked_data[processing_bands]
 
 data = create_temporal_composite(
     data,
@@ -693,7 +719,6 @@ data = create_temporal_composite(
 
 print("Masked temporal composite created successfully.")
 print(data)
-
 # ------------------------------------------------------------
 # 8E. CREATE AFTER-MASKING RGB PREVIEW
 # ------------------------------------------------------------
@@ -703,14 +728,145 @@ after_preview_file = (
 )
 
 save_rgb_preview(
-    data,
+    data[required_bands],
     after_preview_file,
     stretch_limits=rgb_stretch_limits,
 )
 
 print("After-masking preview:", after_preview_file)
 
+# ------------------------------------------------------------
+# 8F. VERIFY MASKING GRID AND CALCULATE BEFORE/AFTER STATS
+# ------------------------------------------------------------
 
+import json
+
+def get_grid_details(composite):
+    """Return spatial metadata for a composite."""
+    return {
+        "crs": str(composite.rio.crs)
+        if composite.rio.crs is not None else None,
+        "width": int(composite.rio.width),
+        "height": int(composite.rio.height),
+        "bounds": [
+            float(value) for value in composite.rio.bounds()
+        ],
+        "resolution": [
+            float(value) for value in composite.rio.resolution()
+        ],
+        "transform": [
+            float(value) for value in tuple(composite.rio.transform())
+        ],
+    }
+
+
+before_grid = get_grid_details(before_composite)
+after_grid = get_grid_details(data)
+
+grid_matches = (
+    before_grid["crs"] is not None
+    and before_grid["crs"] == after_grid["crs"]
+    and before_grid["width"] == after_grid["width"]
+    and before_grid["height"] == after_grid["height"]
+    and np.allclose(before_grid["bounds"], after_grid["bounds"])
+    and np.allclose(
+        before_grid["resolution"], after_grid["resolution"]
+    )
+    and np.allclose(
+        before_grid["transform"], after_grid["transform"]
+    )
+)
+
+print("\nMASKING GRID COMPARISON")
+print("======================")
+print("Before grid:", before_grid)
+print("After grid:", after_grid)
+print("Matching CRS, bounds, dimensions and pixel grid:", grid_matches)
+
+if not grid_matches:
+    raise RuntimeError(
+        "Before- and after-masking composites do not share "
+        "the same spatial grid."
+    )
+
+
+# Calculate valid pixels, NoData/non-finite pixels and statistics.
+masking_report = {
+    "grid_matches": bool(grid_matches),
+    "before_grid": before_grid,
+    "after_grid": after_grid,
+    "same_display_stretch_used": True,
+    "previews": {
+        "before": str(before_preview_file),
+        "after": str(after_preview_file),
+    },
+    "band_statistics": {},
+}
+
+for stage, composite in [
+    ("before_masking", before_composite),
+    ("after_masking", data),
+]:
+    masking_report["band_statistics"][stage] = {}
+
+    print(f"\n{stage.upper().replace('_', ' ')}")
+    print("-" * 45)
+
+    for band_name in required_bands:
+        values = (
+            composite[band_name]
+            .compute()
+            .values
+            .astype("float64")
+        )
+
+        valid_values = values[np.isfinite(values)]
+        total_pixels = int(values.size)
+        valid_pixels = int(valid_values.size)
+        nodata_pixels = total_pixels - valid_pixels
+
+        stats = {
+            "total_pixels": total_pixels,
+            "valid_pixels": valid_pixels,
+            "nodata_or_nonfinite_pixels": nodata_pixels,
+            "minimum": (
+                float(valid_values.min())
+                if valid_pixels else None
+            ),
+            "median": (
+                float(np.median(valid_values))
+                if valid_pixels else None
+            ),
+            "mean": (
+                float(valid_values.mean())
+                if valid_pixels else None
+            ),
+            "maximum": (
+                float(valid_values.max())
+                if valid_pixels else None
+            ),
+        }
+
+        masking_report["band_statistics"][stage][band_name] = stats
+
+        print(
+            f"{band_name.upper()}: "
+            f"valid={valid_pixels:,}, "
+            f"NoData/non-finite={nodata_pixels:,}, "
+            f"min={stats['minimum']}, "
+            f"median={stats['median']}, "
+            f"mean={stats['mean']}, "
+            f"max={stats['maximum']}"
+        )
+
+
+# Save a reusable report for inspection and metadata integration.
+comparison_report_file = OUTPUT_DIR / "masking_comparison_stats.json"
+
+with open(comparison_report_file, "w", encoding="utf-8") as report_file:
+    json.dump(masking_report, report_file, indent=2)
+
+print("\nMasking comparison report:", comparison_report_file)
 # ============================================================
 # 9. PROCESS THE REQUESTED PRODUCT
 # ============================================================
@@ -1001,6 +1157,7 @@ metadata = create_metadata(
     composite_method=composite_method,
     process=process,
     mask_stats=mask_stats,
+    masking_comparison=masking_report,
     project_root=PROJECT_ROOT,
     preview_paths={
         "preview": preview_file,

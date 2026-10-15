@@ -80,19 +80,13 @@ def load_sentinel2(
     """
 
     data = stac_load(
-        [item],
-        bands=[
-            "red",
-            "green",
-            "blue",
-            "nir"
-        ],
-        geopolygon=geometry,
-        chunks={
-            "x": 512,
-            "y": 512
-        }
-    )
+    list(items),
+    bands=["red", "green", "blue", "nir", "scl"],
+    geopolygon=geometry,
+    chunks={"x": 512, "y": 512},
+    groupby="solar_day"
+),
+
 
     return data
 
