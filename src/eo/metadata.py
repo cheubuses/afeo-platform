@@ -67,7 +67,9 @@ def create_metadata(
     preview_paths=None,
     valid_count_path=None,
     valid_count_created=False,
+    masking_comparison=None,
 ):
+
     """
     Create a manifest for the current EO processing run.
 
@@ -251,6 +253,7 @@ def create_metadata(
     metadata = {
         "schema_version": "1.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "masking_comparison": masking_comparison,
         "input": {
             **input_parameters,
             "aoi_crs": "EPSG:4326",
