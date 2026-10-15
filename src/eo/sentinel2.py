@@ -33,11 +33,19 @@ def search_sentinel2(
     return items
 
 
+
 def select_best_scene(items):
     """
-    Select the Sentinel-2 scene with
-    the lowest cloud cover.
+    Select the Sentinel-2 scene with the lowest
+    reported cloud cover.
+
+    eo:cloud_cover is expressed as a percentage (0–100).
     """
+
+    if not items:
+        raise RuntimeError(
+            "Cannot select a scene: no Sentinel-2 items were supplied."
+        )
 
     best_item = min(
         items,
@@ -46,6 +54,18 @@ def select_best_scene(items):
             100
         )
     )
+
+    cloud_percent = best_item.properties.get(
+        "eo:cloud_cover",
+        None
+    )
+
+    print(f"Selected scene: {best_item.id}")
+
+    if cloud_percent is not None:
+        print(f"Scene cloud cover: {cloud_percent:.4f}%")
+    else:
+        print("Scene cloud cover: not reported")
 
     return best_item
 

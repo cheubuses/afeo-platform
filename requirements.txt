@@ -11,3 +11,6 @@ shapely
 pystac
 requests
 Pillow
+
+rio-cogeo==5.4.2
+pytest==8.4.2

@@ -17,6 +17,7 @@ import json
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+import rasterio
 import rioxarray  # Registers the .rio accessor for Xarray
 from shapely.geometry import box
 from odc.stac import configure_s3_access
@@ -45,9 +46,18 @@ from eo.sentinel2 import (
     select_best_scene,
     load_sentinel2_items,
 )
-from eo.composites import create_temporal_composite
+from eo.composites import (
+    create_temporal_composite,
+    save_rgb_preview,
+)
+
+from eo.masking import (
+    mask_with_scl,
+    calculate_masking_statistics,
+)
 from eo.processor import process_data
 from eo.export import export_cog
+from eo.metadata import create_metadata, save_metadata
 
 
 # Create output directory.
@@ -372,12 +382,21 @@ items = search_sentinel2(
 # DIAGNOSTIC: INSPECT SOURCE ASSET METADATA
 # ============================================================
 
+if not items:
+    raise RuntimeError(
+        "No Sentinel-2 scenes matched the AOI, date range, "
+        "and cloud-cover threshold. Try a wider date range "
+        "or a higher cloud-cover threshold."
+    )
+
+# Only inspect the first item after confirming items exist.
 item = items[0]
+2
 
 print("\nSTAC collection:", item.collection_id)
 print("Available assets:", list(item.assets.keys()))
 
-for band_name in ("red", "nir"):
+for band_name in ("red", "green", "blue", "nir"):
     asset = item.assets.get(band_name)
 
     if asset is None:
@@ -395,12 +414,6 @@ for band_name in ("red", "nir"):
     else:
         print("Scale and offset are not specified in this asset metadata.")
         
-if not items:
-    raise RuntimeError(
-        "No Sentinel-2 scenes matched the AOI, date range, "
-        "and cloud-cover threshold. Try a wider date range "
-        "or a higher cloud-cover threshold."
-    )
 
 print(f"\nFound {len(items)} scene(s):")
 
@@ -440,6 +453,61 @@ print("\nLoading Sentinel-2 scenes for compositing...")
 
 data = load_sentinel2_items(items, geometry)
 
+if data is None:
+    raise RuntimeError("Sentinel-2 data loading returned no dataset.")
+
+# TEMPORARY: inspect values returned by stac_load BEFORE scaling
+
+for band_name in ["red", "nir"]:
+    band = data[band_name]
+    sample = band.isel(time=0).compute().values
+    finite = sample[np.isfinite(sample)]
+
+    print(f"\n--- {band_name.upper()} BEFORE SECTION 7A ---")
+    print("Dtype:", band.dtype)
+    print("Attributes:", band.attrs)
+
+    if finite.size:
+        print("Minimum:", float(finite.min()))
+        print("Median:", float(np.median(finite)))
+        print("Maximum:", float(finite.max()))
+        print("Zero values:", int(np.count_nonzero(finite == 0)))
+        print("Negative values:", int(np.count_nonzero(finite < 0)))
+
+# ============================================================
+# 7A. CONVERT OPTICAL BANDS TO SURFACE REFLECTANCE
+# ============================================================
+
+# Earth Search asset metadata reports scale=0.0001
+# and offset=-0.1 for the inspected red and NIR assets.
+# Apply this transformation once to the raw DN values.
+# Keep SCL unchanged because it contains class codes.
+
+REFLECTANCE_SCALE = 0.0001
+REFLECTANCE_OFFSET = -0.1
+
+for band_name in ["red", "green", "blue", "nir"]:
+    raw_band = data[band_name]
+
+    # Zero is the declared source NoData value.
+    valid_pixels = raw_band != 0
+
+    data[band_name] = (
+        raw_band.astype("float32")
+        * REFLECTANCE_SCALE
+        + REFLECTANCE_OFFSET
+    ).where(valid_pixels)
+
+    data[band_name].attrs.update({
+        "units": "surface reflectance",
+        "scale_applied": REFLECTANCE_SCALE,
+        "offset_applied": REFLECTANCE_OFFSET,
+        "source_nodata": 0,
+    })
+
+print("\nOptical bands converted to surface reflectance.")
+print("Applied formula: reflectance = DN * 0.0001 - 0.1")
+
 # Diagnostic: inspect loaded reflectance bands before NDVI calculation.
 for band_name in ["red", "nir"]:
     band = data[band_name]
@@ -457,8 +525,7 @@ for band_name in ["red", "nir"]:
         print("Mean:", float(valid.mean()))
 
 
-if data is None:
-    raise RuntimeError("Sentinel-2 data loading returned no dataset.")
+
 
 required_bands = ["red", "green", "blue", "nir"]
 missing_bands = [
@@ -479,22 +546,169 @@ print("Variables:", list(data.data_vars))
 print("CRS:", data.rio.crs)
 
 
+#
 # ============================================================
-# 8. CREATE TEMPORAL COMPOSITE
+# 8. SCL MASKING, VALIDATION AND TEMPORAL COMPOSITE
 # ============================================================
 
-print(f"\nCreating monthly {composite_method} composite...")
+print("\nPreparing RGB preview before masking...")
 
-# Keep only the bands needed for RGB and NDVI.
-data = data[required_bands]
+# Confirm that SCL is available before attempting the mask.
+if "scl" not in data.data_vars:
+    raise ValueError(
+        "SCL band is missing. Check that "
+        "load_sentinel2_items loads the 'scl' band."
+    )
+
+# ------------------------------------------------------------
+# 8A. CREATE BEFORE-MASKING RGB PREVIEW
+# ------------------------------------------------------------
+
+before_preview_file = (
+    OUTPUT_DIR / "rgb_preview_before_masking.png"
+)
+
+before_composite = create_temporal_composite(
+    data[required_bands],
+    method=composite_method,
+)
+
+rgb_stretch_limits = save_rgb_preview(
+    before_composite,
+    before_preview_file,
+)
+
+print("Before-masking preview:", before_preview_file)
+
+# ------------------------------------------------------------
+# 8B. APPLYING  SCL MASK BEFORE TEMPORAL COMPOSITING
+# ------------------------------------------------------------
+
+print("\nValidating SCL alignment and applying cloud/shadow mask...")
+
+original_data = data
+
+# mask_with_scl checks alignment before applying the mask.
+masked_data = mask_with_scl(original_data)
+
+# Calculate statistics from the original observations and
+# their corresponding masked observations.
+mask_stats, valid_observation_count = (
+    calculate_masking_statistics(
+        original_data,
+        masked_data,
+    )
+)
+
+print("\nSCL MASKING STATISTICS")
+print("----------------------")
+print(
+    "Eligible observations:",
+    f"{mask_stats['eligible_observations']:,}",
+)
+print(
+    "Valid observations after masking:",
+    f"{mask_stats['valid_observations_after_masking']:,}",
+)
+print(
+    "Observations rejected by SCL:",
+    f"{mask_stats['observations_rejected_by_scl']:,}",
+)
+print(
+    "Percentage rejected:",
+    f"{mask_stats['masked_percentage']:.2f}%",
+)
+print("Excluded SCL classes:", mask_stats["excluded_scl_classes"])
+print("Retained SCL classes:", mask_stats["retained_scl_classes"])
+
+# ------------------------------------------------------------
+# 8C. EXPORT VALID OBSERVATION COUNT PER PIXEL
+# ------------------------------------------------------------
+
+valid_count_file = (
+    OUTPUT_DIR / "valid_observation_count.tif"
+)
+
+if valid_observation_count is not None:
+    valid_count_to_save = valid_observation_count
+
+    # Preserve the original grid's georeferencing.
+    source_crs = original_data.rio.crs
+
+    if source_crs is not None:
+        valid_count_to_save = (
+            valid_count_to_save.rio.write_crs(
+                source_crs,
+                inplace=False,
+            )
+        )
+
+    valid_count_to_save = (
+        valid_count_to_save.rio.write_transform(
+            original_data.rio.transform(),
+            inplace=False,
+        )
+    )
+
+    # 65535 is reserved for NoData; zero remains a valid count.
+    valid_count_to_save = (
+        valid_count_to_save
+        .astype("uint16")
+        .rio.write_nodata(65535, inplace=False)
+    )
+
+    valid_count_to_save.rio.to_raster(
+        valid_count_file,
+        driver="COG",
+        dtype="uint16",
+        compress="DEFLATE",
+    )
+
+    print(
+        "Valid-observation-count COG:",
+        valid_count_file,
+    )
+else:
+    print(
+        "Valid-observation-count raster not created: "
+        "the input has no time dimension."
+    )
+
+# ------------------------------------------------------------
+# 8D. COMPOSITE THE MASKED SPECTRAL BANDS
+# ------------------------------------------------------------
+
+print(
+    f"\nCreating masked monthly {composite_method} composite..."
+)
+
+# The SCL layer is no longer needed in the spectral composite.
+# NaN values from masking are ignored by mean/median.
+data = masked_data[required_bands]
 
 data = create_temporal_composite(
     data,
     method=composite_method,
 )
 
-print("Temporal composite created successfully.")
+print("Masked temporal composite created successfully.")
 print(data)
+
+# ------------------------------------------------------------
+# 8E. CREATE AFTER-MASKING RGB PREVIEW
+# ------------------------------------------------------------
+
+after_preview_file = (
+    OUTPUT_DIR / "rgb_preview_after_masking.png"
+)
+
+save_rgb_preview(
+    data,
+    after_preview_file,
+    stretch_limits=rgb_stretch_limits,
+)
+
+print("After-masking preview:", after_preview_file)
 
 
 # ============================================================
@@ -502,6 +716,36 @@ print(data)
 # ============================================================
 
 print(f"\nRunning {process} processing...")
+
+
+# TEMPORARY NDVI INPUT DIAGNOSTICS
+if process == "NDVI":
+    import numpy as np
+
+    red_values = data["red"].compute().values.astype("float32")
+    nir_values = data["nir"].compute().values.astype("float32")
+
+    valid = np.isfinite(red_values) & np.isfinite(nir_values)
+    red_valid = red_values[valid]
+    nir_valid = nir_values[valid]
+    denominator = red_valid + nir_valid
+
+    print("\n--- NDVI INPUT DIAGNOSTICS ---")
+    print("Finite red pixels:", red_valid.size)
+    print("Red min/median/max:",
+          np.min(red_valid), np.median(red_valid), np.max(red_valid))
+    print("NIR min/median/max:",
+          np.min(nir_valid), np.median(nir_valid), np.max(nir_valid))
+    print("Negative red pixels:", np.sum(red_valid < 0))
+    print("Negative NIR pixels:", np.sum(nir_valid < 0))
+    print("Zero denominators:", np.sum(denominator == 0))
+    print("Near-zero denominators (abs < 1e-6):",
+          np.sum(np.abs(denominator) < 1e-6))
+    print("Smallest absolute denominator:",
+          np.min(np.abs(denominator)))
+    print("--- END DIAGNOSTICS ---\n")
+
+
 
 result = process_data(data, process)
 
@@ -535,8 +779,6 @@ print("COG export completed.")
 # 10A. REPORT VALID AND NODATA PIXEL COUNTS
 # ============================================================
 
-import rasterio
-import numpy as np
 
 print("\n==========================================")
 print("       OUTPUT PIXEL QUALITY REPORT")
@@ -735,15 +977,13 @@ print("Preview saved:", preview_file)
 
 
 # ============================================================
-# 12. CREATE PROCESSING METADATA
+# 12. CREATE AND SAVE CURRENT-RUN METADATA
 # ============================================================
 
-crs = data.rio.crs
-
-crs = data.rio.crs
-
-metadata = {
-    "input": {
+metadata = create_metadata(
+    output_path=output_file,
+    aoi_shape=aoi_shape,
+    input_parameters={
         "latitude": latitude,
         "longitude": longitude,
         "radius_km": radius_km,
@@ -753,76 +993,31 @@ metadata = {
         "admin2_name": admin2_name,
         "admin3_name": admin3_name,
     },
-
-    # Your existing stac_search, scene, spatial,
-    # processing and outputs sections follow here.,
-
-    "stac_search": {
-        "catalog": "Earth Search",
-        "collection": "sentinel-2-l2a",
-        "start_date": start_date,
-        "end_date": end_date,
-        "cloud_cover_threshold": cloud_cover,
-        "matching_scene_count": len(items),
+    start_date=start_date,
+    end_date=end_date,
+    cloud_cover_threshold=cloud_cover,
+    items=items,
+    reference_item=best_item,
+    composite_method=composite_method,
+    process=process,
+    mask_stats=mask_stats,
+    project_root=PROJECT_ROOT,
+    preview_paths={
+        "preview": preview_file,
+        "rgb_preview_before_masking": before_preview_file,
+        "rgb_preview_after_masking": after_preview_file,
     },
-    
-    # This is the reference scene selected from the search.
-    # The temporal composite may use multiple matching scenes.
-    "scene": {
-        "reference_scene_id": best_item.id,
-        "collection": best_item.collection_id,
-        "datetime": best_item.properties.get("datetime"),
-        "cloud_cover": best_cloud_cover,
-        "platform": best_item.properties.get("platform"),
-        "constellation": best_item.properties.get("constellation"),
-        "processing_level": best_item.properties.get("processing:level"),
-    },
+    valid_count_path=valid_count_file,
+    valid_count_created=(
+        valid_observation_count is not None
+        and valid_count_file.is_file()
+    ),
+)
 
-    "spatial": {
-        "crs": str(crs) if crs else None,
-        "epsg": crs.to_epsg() if crs else None,
-        "width": data.sizes.get("x"),
-        "height": data.sizes.get("y"),
-        "aoi_bbox": list(aoi_shape.bounds),
-    },
-
-    "processing": {
-        "product": process,
-        "composite_method": composite_method,
-        "composite_period": "monthly",
-        "year": year,
-        "month": month,
-        "rgb": process == "RGB",
-        "ndvi": process == "NDVI",
-        "cloud_native": True,
-        "xarray": True,
-        "dask": True,
-        "output_format": "COG",
-    },
-
-    "outputs": {
-        "cog": output_file.name,
-        "preview": preview_file.name,
-        "rgb_preview": (
-            "rgb_preview.png" if process == "RGB" else None
-        ),
-        "ndvi_preview": (
-            "ndvi_preview.png" if process == "NDVI" else None
-        ),
-    },
-}
-
-
-# ============================================================
-# 13. SAVE METADATA JSON
-# ============================================================
-
-metadata_file = OUTPUT_DIR / "metadata.json"
-
-with open(metadata_file, "w", encoding="utf-8") as file:
-    json.dump(metadata, file, indent=4, allow_nan=False)
-
-print("\nMetadata saved:", metadata_file)
+metadata_file = save_metadata(
+    metadata,
+    OUTPUT_DIR / "metadata.json",
+)
 
 
 # ============================================================
