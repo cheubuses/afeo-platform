@@ -70,39 +70,101 @@ def select_best_scene(items):
     return best_item
 
 
-def load_sentinel2(
-    item,
-    geometry
-):
+def load_sentinel2_items(items, geometry, requested_product="RGB"):
     """
-    Load Sentinel-2 bands as a lazy
-    XArray dataset using Dask.
+    Load Sentinel-2 bands needed for the requested EO product.
+
+    RGB, false colour, NDVI and NDWI use the existing 10 m workflow.
+
+    NDMI, NBR and NBR2 load the required SWIR bands on a 20 m grid.
+    SCL is retained for quality masking.
     """
+
+    product = requested_product.strip().upper()
+
+    # Bands required by the existing RGB preview and masking workflow.
+    bands = ["red", "green", "blue", "nir", "scl"]
+
+    # Load only the additional SWIR bands required by the product.
+    if product == "NDMI":
+        bands.append("swir16")
+
+    elif product == "NBR":
+        bands.append("swir22")
+
+    elif product == "NBR2":
+        bands.extend(["swir16", "swir22"])
+
+    # Keep the existing loading behaviour for products using
+    # only the standard visible/NIR bands.
+    load_options = {}
+
+    # Use a 20 m output grid for indices requiring SWIR.
+    if product in {"NDMI", "NBR", "NBR2"}:
+        load_options["resolution"] = 20
+
+        # Continuous reflectance bands use bilinear resampling.
+        # SCL is categorical, so it must use nearest-neighbour.
+        load_options["resampling"] = {
+            band: ("nearest" if band == "scl" else "bilinear")
+            for band in bands
+        }
 
     data = stac_load(
-    list(items),
-    bands=["red", "green", "blue", "nir", "scl"],
-    geopolygon=geometry,
-    chunks={"x": 1024, "y": 1024},
-    groupby="solar_day"
-),
-
+        list(items),
+        bands=bands,
+        geopolygon=geometry,
+        chunks={"x": 1024, "y": 1024},
+        groupby="solar_day",
+        **load_options,
+    )
 
     return data
 
 
-def load_sentinel2_items(items, geometry):
+def load_sentinel2_items(items, geometry, requested_product="RGB"):
     """
-    Load multiple Sentinel-2 scenes for temporal compositing.
-    Data are loaded lazily using Dask.
+    Load Sentinel-2 bands required for the requested product.
+
+    Spatial chunks are 1024 x 1024.
+    SWIR-based indices use a 20 m output grid.
     """
+
+    product = requested_product.strip().upper()
+
+    # Keep the core bands for RGB previews and SCL masking.
+    bands = ["red", "green", "blue", "nir", "scl"]
+
+    if product == "NDMI":
+        bands.append("swir16")
+
+    elif product == "NBR":
+        bands.append("swir22")
+
+    elif product == "NBR2":
+        bands.extend(["swir16", "swir22"])
+
+    load_options = {
+        "chunks": {"x": 1024, "y": 1024},
+        "groupby": "solar_day",
+    }
+
+    # SWIR bands are native 20 m, so use a 20 m grid
+    # for the moisture and burn indices.
+    if product in {"NDMI", "NBR", "NBR2"}:
+        load_options["resolution"] = 20
+        load_options["resampling"] = {
+            band: (
+                "nearest" if band == "scl" else "bilinear"
+            )
+            for band in bands
+        }
 
     data = stac_load(
         list(items),
-        bands=["red", "green", "blue", "nir", "scl"],
+        bands=bands,
         geopolygon=geometry,
-        chunks={"x": 512, "y": 512},
-        groupby="solar_day"
+        **load_options,
     )
 
     return data

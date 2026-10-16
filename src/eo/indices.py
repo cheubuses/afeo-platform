@@ -70,3 +70,118 @@ def calculate_ndvi(
     })
 
     return ndvi
+
+# ============================================================
+# REUSABLE NORMALIZED DIFFERENCE INDEX CALCULATIONS
+# ============================================================
+
+def _calculate_normalized_difference(
+    band_a,
+    band_b,
+    *,
+    index_name,
+    long_name,
+    formula,
+    band_a_name,
+    band_b_name,
+    denominator_threshold=1e-6,
+):
+    """
+    Calculate a normalized difference index from reflectance bands.
+
+    Input bands must already be converted to surface reflectance.
+    No additional scale factor or offset is applied.
+    """
+
+    if denominator_threshold <= 0:
+        raise ValueError(
+            "denominator_threshold must be greater than zero."
+        )
+
+    band_a = band_a.astype("float32")
+    band_b = band_b.astype("float32")
+
+    denominator = band_a + band_b
+
+    valid = (
+        np.isfinite(band_a)
+        & np.isfinite(band_b)
+        & (band_a > 0)
+        & (band_b > 0)
+        & np.isfinite(denominator)
+        & (np.abs(denominator) > denominator_threshold)
+    )
+
+    result = xr.where(
+        valid,
+        (band_a - band_b) / denominator,
+        np.nan,
+    ).astype("float32")
+
+    result.name = index_name
+
+    result.attrs.update({
+        "long_name": long_name,
+        "formula": formula,
+        "band_a": band_a_name,
+        "band_b": band_b_name,
+        "input_units": "surface reflectance",
+        "denominator_threshold": float(denominator_threshold),
+        "non_positive_reflectance_masked": True,
+        "expected_range": "-1 to 1",
+        "clipping_applied": False,
+    })
+
+    return result
+
+
+def calculate_ndwi(green, nir):
+    """ Normalized Differential Water Index - NDWI for open-water enhancement."""
+    return _calculate_normalized_difference(
+        green,
+        nir,
+        index_name="ndwi",
+        long_name="Normalized Difference Water Index (McFeeters)",
+        formula="(Green - NIR) / (Green + NIR)",
+        band_a_name="Sentinel-2 B03 (Green)",
+        band_b_name="Sentinel-2 B08 (NIR)",
+    )
+
+
+def calculate_ndmi(nir, swir1):
+    """Normalized Difference Moisture Index."""
+    return _calculate_normalized_difference(
+        nir,
+        swir1,
+        index_name="ndmi",
+        long_name="Normalized Difference Moisture Index",
+        formula="(NIR - SWIR1) / (NIR + SWIR1)",
+        band_a_name="Sentinel-2 B08 (NIR)",
+        band_b_name="Sentinel-2 B11 (SWIR1)",
+    )
+
+
+def calculate_nbr(nir, swir2):
+    """Normalized Burn Ratio."""
+    return _calculate_normalized_difference(
+        nir,
+        swir2,
+        index_name="nbr",
+        long_name="Normalized Burn Ratio",
+        formula="(NIR - SWIR2) / (NIR + SWIR2)",
+        band_a_name="Sentinel-2 B08 (NIR)",
+        band_b_name="Sentinel-2 B12 (SWIR2)",
+    )
+
+
+def calculate_nbr2(swir1, swir2):
+    """Normalized Burn Ratio 2."""
+    return _calculate_normalized_difference(
+        swir1,
+        swir2,
+        index_name="nbr2",
+        long_name="Normalized Burn Ratio 2",
+        formula="(SWIR1 - SWIR2) / (SWIR1 + SWIR2)",
+        band_a_name="Sentinel-2 B11 (SWIR1)",
+        band_b_name="Sentinel-2 B12 (SWIR2)",
+    )
