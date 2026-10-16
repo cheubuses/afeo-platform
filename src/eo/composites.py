@@ -70,7 +70,12 @@ def create_temporal_composite(data, method="median"):
     return composite
 
 
-def save_rgb_preview(data, output_path, stretch_limits=None):
+def save_rgb_preview(
+    data,
+    output_path,
+    stretch_limits=None,
+    max_preview_dimension=1600,
+):
     """Save an RGB PNG preview using optional shared display limits."""
     import numpy as np
     import matplotlib.pyplot as plt
@@ -89,7 +94,40 @@ def save_rgb_preview(data, output_path, stretch_limits=None):
     if not all(name in labels for name in expected):
         raise ValueError(f"Expected RGB bands {expected}; found {labels}.")
 
-    rgb = rgb.sel(band=expected).compute()
+     # ------------------------------------------------------------
+    # Reduce resolution for preview generation only.
+    # The original composite and exported COG remain unchanged.
+    # ------------------------------------------------------------
+
+    height = int(rgb.sizes["y"])
+    width = int(rgb.sizes["x"])
+
+    downsample_factor = max(
+        1,
+        int(
+            np.ceil(
+                max(height, width) / max_preview_dimension
+            )
+        ),
+    )
+
+    rgb = rgb.sel(band=expected)
+
+    if downsample_factor > 1:
+        print(
+            f"Downsampling RGB preview by "
+            f"{downsample_factor}x for display."
+        )
+
+        rgb = rgb.coarsen(
+            y=downsample_factor,
+            x=downsample_factor,
+            boundary="trim",
+        ).mean(skipna=True)
+
+    # Compute the reduced preview, not the full-resolution image.
+    rgb = rgb.compute()
+
     values = np.asarray(rgb.values, dtype=np.float32)
 
     if values.ndim != 3 or values.shape[0] != 3:
