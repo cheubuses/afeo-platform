@@ -83,7 +83,7 @@ def load_sentinel2(
     list(items),
     bands=["red", "green", "blue", "nir", "scl"],
     geopolygon=geometry,
-    chunks={"x": 512, "y": 512},
+    chunks={"x": 1024, "y": 1024},
     groupby="solar_day"
 ),
 

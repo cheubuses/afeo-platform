@@ -94,8 +94,8 @@ admin2_name = None
 admin3_name = None
 
 
-    # Keep your existing stac_search, scene, spatial,
-    # processing and outputs entries below.
+# Keep your existing stac_search, scene, spatial,
+# processing and outputs entries below.
 
 
 if aoi_mode == "1":
@@ -283,7 +283,7 @@ else:
     raise ValueError("Choose AOI input method 1 or 2.")
 
 # ============================================================
-# 2A. MONTHLY DATE AND PROCESSING INPUTS
+# 2. MONTHLY DATE AND PROCESSING INPUTS
 # ============================================================
 
 year = int(input("Enter year (e.g. 2026): "))
@@ -365,7 +365,7 @@ print("STAC connection successful.")
 
 
 # ============================================================
-# 5. SEARCH SENTINEL-2 SCENES
+# 5A. SEARCH SENTINEL-2 SCENES
 # ============================================================
 
 print("\nSearching for Sentinel-2 imagery...")
@@ -379,7 +379,7 @@ items = search_sentinel2(
 )
 
 # ============================================================
-# DIAGNOSTIC: CHECK SENTINEL-2 OFFSET METADATA
+# 5B. DIAGNOSTIC: CHECK SENTINEL-2 OFFSET METADATA
 # ============================================================
 
 print("\nCHECKING SENTINEL-2 OFFSET METADATA")
@@ -405,7 +405,7 @@ for item in items:
             print(f"{band_name.upper()} raster metadata:", raster_bands)
 
 # ============================================================
-# DIAGNOSTIC: INSPECT SOURCE ASSET METADATA
+# 5C. DIAGNOSTIC: INSPECT SOURCE ASSET METADATA
 # ============================================================
 
 if not items:
@@ -481,34 +481,46 @@ data = load_sentinel2_items(items, geometry)
 if data is None:
     raise RuntimeError("Sentinel-2 data loading returned no dataset.")
 
-# TEMPORARY: inspect values returned by stac_load BEFORE scaling
-
-for band_name in ["red", "nir"]:
-    band = data[band_name]
-    sample = band.isel(time=0).compute().values
-    finite = sample[np.isfinite(sample)]
-
-    print(f"\n--- {band_name.upper()} BEFORE SECTION 7A ---")
-    print("Dtype:", band.dtype)
-    print("Attributes:", band.attrs)
-
-    if finite.size:
-        print("Minimum:", float(finite.min()))
-        print("Median:", float(np.median(finite)))
-        print("Maximum:", float(finite.max()))
-        print("Zero values:", int(np.count_nonzero(finite == 0)))
-        print("Negative values:", int(np.count_nonzero(finite < 0)))
-
 
 # ============================================================
-# 7A. CONVERT OPTICAL BANDS TO SURFACE REFLECTANCE
+# 7A. MASK PIXELS OUTSIDE THE EXACT AOI POLYGON
+# ============================================================
+
+print("\nApplying exact AOI polygon mask...")
+
+# Confirm that the AOI geometry is valid.
+if aoi_shape.is_empty or not aoi_shape.is_valid:
+    raise ValueError("The AOI polygon is empty or invalid.")
+
+# Confirm that the loaded imagery has spatial reference information.
+if data.rio.crs is None:
+    raise ValueError(
+        "Loaded Sentinel-2 data has no CRS; "
+        "cannot safely apply the AOI polygon mask."
+    )
+
+print("Raster CRS:", data.rio.crs)
+print("AOI geometry type:", aoi_shape.geom_type)
+
+# geopolygon limits the extent to the bounding box.
+# rio.clip applies the actual polygon boundary.
+data = data.rio.clip(
+    geometries=[aoi_shape.__geo_interface__],
+    crs="EPSG:4326",
+    drop=False,
+    all_touched=False,
+)
+
+print("AOI polygon mask applied.")
+print("Raster dimensions:", data.sizes)
+print("Pixels outside AOI are set to NoData.")
+# ============================================================
+# 7B. CONVERT OPTICAL BANDS TO SURFACE REFLECTANCE
 # ============================================================
 
 REFLECTANCE_SCALE = 0.0001
 SOURCE_NODATA = 0
 
-# Earth Search reports whether the BOA offset was already applied.
-# Verify that all scenes have a consistent, explicit flag.
 offset_flags = {
     item.properties.get("earthsearch:boa_offset_applied")
     for item in items
@@ -516,9 +528,9 @@ offset_flags = {
 
 if len(offset_flags) != 1 or None in offset_flags:
     raise RuntimeError(
-        "Scenes have missing or inconsistent "
-        "earthsearch:boa_offset_applied flags. "
-        "Do not combine them until scaling is resolved."
+        "Scenes have missing or inconsistent BOA offset flags. "
+        "Do not composite them until the reflectance convention "
+        "has been verified."
     )
 
 boa_offset_already_applied = offset_flags.pop()
@@ -529,14 +541,13 @@ print("BOA offset already applied:", boa_offset_already_applied)
 for band_name in ["red", "green", "blue", "nir"]:
     raw_band = data[band_name]
 
-    # Capture source metadata before changing the data.
-    source_attrs = dict(raw_band.attrs)
-    valid_pixels = raw_band != SOURCE_NODATA
+    # Exclude source NoData and zeros introduced outside the AOI.
+    valid_pixels = (raw_band != SOURCE_NODATA) & raw_band.notnull()
 
-    # Apply scale once. Subtract the offset only if the
-    # provider has NOT already applied it to the source pixels.
     if boa_offset_already_applied:
-        reflectance = raw_band.astype("float32") * REFLECTANCE_SCALE
+        reflectance = (
+            raw_band.astype("float32") * REFLECTANCE_SCALE
+        )
         offset_used = 0.0
     else:
         reflectance = (
@@ -555,22 +566,7 @@ for band_name in ["red", "green", "blue", "nir"]:
         "source_nodata": SOURCE_NODATA,
     })
 
-    print(f"\n{band_name.upper()}")
-    print("Source dtype:", raw_band.dtype)
-    print("Source attributes:", source_attrs)
-    print("Scale applied in pipeline:", REFLECTANCE_SCALE)
-    print("Additional offset in pipeline:", offset_used)
-
-    sample = data[band_name].isel(time=0).compute().values
-    valid = sample[np.isfinite(sample)]
-
-    if valid.size:
-        print("Reflectance minimum:", float(valid.min()))
-        print("Reflectance median:", float(np.median(valid)))
-        print("Reflectance maximum:", float(valid.max()))
-
-print("\nReflectance conversion completed.")
-
+print("Reflectance conversion completed.")
 # ============================================================
 # 8. SCL MASKING, VALIDATION AND TEMPORAL COMPOSITE
 # ============================================================
@@ -739,8 +735,6 @@ print("After-masking preview:", after_preview_file)
 # 8F. VERIFY MASKING GRID AND CALCULATE BEFORE/AFTER STATS
 # ------------------------------------------------------------
 
-import json
-
 def get_grid_details(composite):
     """Return spatial metadata for a composite."""
     return {
@@ -874,35 +868,6 @@ print("\nMasking comparison report:", comparison_report_file)
 print(f"\nRunning {process} processing...")
 
 
-# TEMPORARY NDVI INPUT DIAGNOSTICS
-if process == "NDVI":
-    import numpy as np
-
-    red_values = data["red"].compute().values.astype("float32")
-    nir_values = data["nir"].compute().values.astype("float32")
-
-    valid = np.isfinite(red_values) & np.isfinite(nir_values)
-    red_valid = red_values[valid]
-    nir_valid = nir_values[valid]
-    denominator = red_valid + nir_valid
-
-    print("\n--- NDVI INPUT DIAGNOSTICS ---")
-    print("Finite red pixels:", red_valid.size)
-    print("Red min/median/max:",
-          np.min(red_valid), np.median(red_valid), np.max(red_valid))
-    print("NIR min/median/max:",
-          np.min(nir_valid), np.median(nir_valid), np.max(nir_valid))
-    print("Negative red pixels:", np.sum(red_valid < 0))
-    print("Negative NIR pixels:", np.sum(nir_valid < 0))
-    print("Zero denominators:", np.sum(denominator == 0))
-    print("Near-zero denominators (abs < 1e-6):",
-          np.sum(np.abs(denominator) < 1e-6))
-    print("Smallest absolute denominator:",
-          np.min(np.abs(denominator)))
-    print("--- END DIAGNOSTICS ---\n")
-
-
-
 result = process_data(data, process)
 
 if result is None:
@@ -910,7 +875,6 @@ if result is None:
 
 print(f"{process} processing completed successfully.")
 print(result)
-
 
 
 
@@ -997,137 +961,101 @@ preview_file = OUTPUT_DIR / (
 
 if process == "RGB":
 
-   
-    # RGB processing returns a DataArray with dimensions:
-    # band, y, x
-    rgb_data = result.compute()
+    print("Creating reduced-resolution RGB preview...")
 
-    print("RGB dimensions:", rgb_data.dims)
-    print("Band labels:", rgb_data.coords["band"].values)
-
-    # Extract the bands by position.
-    # This assumes create_rgb() stacks red, green, blue in that order.
-    rgb_data = rgb_data.transpose("band", "y", "x")
-
-    if rgb_data.sizes["band"] != 3:
-        raise ValueError(
-            f"Expected 3 RGB bands, got {rgb_data.sizes['band']}."
-        )
-
-    
-    # Extract bands using their confirmed labels
-    band_labels = [
-        str(label)
-        for label in rgb_data.coords["band"].values
-    ]
-
-    expected_bands = ["red", "green", "blue"]
-
-    if band_labels != expected_bands:
-        raise ValueError(
-            f"Unexpected RGB band order: {band_labels}. "
-            f"Expected {expected_bands}."
-        )
-
-    bands = [
-        np.asarray(
-            rgb_data.sel(band=band).values,
-            dtype=np.float32,
-        ).squeeze()
-        for band in expected_bands
-    ]
-
-    if any(band.ndim != 2 for band in bands):
-        raise ValueError("Each RGB band must be a 2D array.")
-
-    if not (bands[0].shape == bands[1].shape == bands[2].shape):
-        raise ValueError("RGB bands have different spatial shapes.")
-
-    # Shape: (height, width, 3)
-    rgb_array = np.stack(bands, axis=-1)
-
-    valid_rgb = (
-        np.isfinite(rgb_array).all(axis=-1)
-        & (rgb_array >= 0).all(axis=-1)
-    )
-
-
-    rgb_display = np.zeros_like(rgb_array, dtype=np.float32)
-
-    for band_index in range(3):
-        band = rgb_array[..., band_index]
-        valid = valid_rgb & np.isfinite(band)
-
-        if valid.any():
-            low, high = np.percentile(band[valid], [2, 98])
-
-            if high > low:
-                rgb_display[..., band_index] = np.clip(
-                    (band - low) / (high - low),
-                    0,
-                    1,
-                )
-
-    # Transparent pixels indicate invalid data.
-    alpha = valid_rgb.astype(np.float32)
-
-    plt.imsave(
+    save_rgb_preview(
+        result,
         preview_file,
-        np.dstack([rgb_display, alpha]),
+        max_preview_dimension=1600,
     )
+
+    print("Preview saved:", preview_file)
 
 elif process == "NDVI":
 
-    # Compute only when creating the preview.
-    ndvi_data = result.compute()
+    # ------------------------------------------------------------
+    # Create a reduced-resolution NDVI preview.
+    # The original NDVI result remains full resolution.
+    # ------------------------------------------------------------
 
-    ndvi_values = np.asarray(
-        ndvi_data.values,
-        dtype=np.float32,
-    ).squeeze()
+    max_preview_dimension = 1600
 
-    if ndvi_values.ndim != 2:
-        raise ValueError(
-            "NDVI preview requires a 2D array. "
-            "Check the dimensions returned by process_data()."
+    height = int(result.sizes["y"])
+    width = int(result.sizes["x"])
+
+    downsample_factor = max(
+        1,
+        int(
+            np.ceil(
+                max(height, width) / max_preview_dimension
+            )
+        ),
+    )
+
+    ndvi_preview_result = result
+
+    if downsample_factor > 1:
+        print(
+            f"Downsampling NDVI preview by "
+            f"{downsample_factor}x for display."
         )
 
-    # Mask NaN, infinity and values outside the theoretical NDVI range.
-    valid_ndvi = (
-        np.isfinite(ndvi_values)
-        & (ndvi_values >= -1)
-        & (ndvi_values <= 1)
+        ndvi_preview_result = result.coarsen(
+            y=downsample_factor,
+            x=downsample_factor,
+            boundary="trim",
+        ).mean(skipna=True)
+
+    ndvi_data = ndvi_preview_result.compute()
+
+ndvi_values = np.asarray(
+    ndvi_data.values,
+    dtype=np.float32,
+).squeeze()
+
+
+if ndvi_values.ndim != 2:
+    raise ValueError(
+        "NDVI preview requires a 2D array. "
+        "Check the dimensions returned by process_data()."
     )
 
-    ndvi_masked = np.ma.masked_where(
-        ~valid_ndvi,
-        ndvi_values,
-    )
+# Mask NaN, infinity and values outside the theoretical NDVI range.
+valid_ndvi = (
+    np.isfinite(ndvi_values)
+    & (ndvi_values >= -1)
+    & (ndvi_values <= 1)
+)
 
-    cmap = plt.get_cmap("RdYlGn").copy()
-    cmap.set_bad((0, 0, 0, 0))
+ndvi_masked = np.ma.masked_where(
+    ~valid_ndvi,
+    ndvi_values,
+)
 
-    fig, ax = plt.subplots(figsize=(8, 7))
+cmap = plt.get_cmap("RdYlGn").copy()
+cmap.set_bad((0, 0, 0, 0))
 
-    image = ax.imshow(
-        ndvi_masked,
-        cmap=cmap,
-        vmin=-1,
-        vmax=1,
-    )
+fig, ax = plt.subplots(figsize=(8, 7))
 
-    fig.colorbar(image, ax=ax, label="NDVI")
-    ax.set_title("Sentinel-2 NDVI Preview")
-    ax.set_axis_off()
+image = ax.imshow(
+    ndvi_masked,
+    cmap=cmap,
+    vmin=-1,
+    vmax=1,
+)
 
-    fig.tight_layout()
-    fig.savefig(
-        preview_file,
-        dpi=150,
-        bbox_inches="tight",
-        transparent=True,
-    )
-    plt.close(fig)
+fig.colorbar(image, ax=ax, label="NDVI")
+ax.set_title("Sentinel-2 NDVI Preview")
+ax.set_axis_off()
+
+fig.tight_layout()
+fig.savefig(
+    preview_file,
+    dpi=150,
+    bbox_inches="tight",
+    transparent=True,
+)
+plt.close(fig)
 
 print("Preview saved:", preview_file)
 
