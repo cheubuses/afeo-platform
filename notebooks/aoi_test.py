@@ -48,6 +48,7 @@ from eo.sentinel2 import (
 )
 from eo.composites import (
     create_temporal_composite,
+    save_color_preview,
     save_rgb_preview,
 )
 
@@ -69,20 +70,19 @@ configure_s3_access(aws_unsigned=True)
 
 
 # ============================================================
-# 2. COLLECT AND VALIDATE USER INPUTS
+# 2. MONTHLY DATE AND PROCESSING INPUTS
+# ============================================================
+# ============================================================
+# 2. COLLECT AND VALIDATE AOI INPUTS
 # ============================================================
 
-print("\n==========================================")
-print("       Sentinel-2 EO Processing")
-print("==========================================\n")
-
-print("Select AOI input method:")
+print("\nSelect AOI input method:")
 print("1. Administrative area from FieldMaps GeoParquet")
 print("2. Latitude, longitude and radius")
 
 aoi_mode = input("Enter choice (1 or 2): ").strip()
 
-# Metadata fields: populated according to the selected AOI method.
+# Initialise metadata fields for either AOI method.
 latitude = None
 longitude = None
 radius_km = None
@@ -92,10 +92,6 @@ admin_level = None
 admin1_name = None
 admin2_name = None
 admin3_name = None
-
-
-# Keep your existing stac_search, scene, spatial,
-# processing and outputs entries below.
 
 
 if aoi_mode == "1":
@@ -115,10 +111,7 @@ if aoi_mode == "1":
     if admin_level not in (1, 2, 3):
         raise ValueError("Administrative level must be 1, 2 or 3.")
 
-    # --------------------------------------------------------
-    # Select Admin 1
-    # --------------------------------------------------------
-
+    # Select Admin 1.
     admin1_options = list_admin1(country_code)
 
     if not admin1_options:
@@ -131,25 +124,17 @@ if aoi_mode == "1":
     for index, name in enumerate(admin1_options, start=1):
         print(f"{index}. {name}")
 
-    selection = int(
-        input("\nSelect Admin 1 by number: ").strip()
-    )
+    selection = int(input("\nSelect Admin 1 by number: ").strip())
 
     if not 1 <= selection <= len(admin1_options):
         raise ValueError("Invalid Admin 1 selection.")
 
     admin1_name = admin1_options[selection - 1]
 
-    # --------------------------------------------------------
-    # Select Admin 2, if requested
-    # --------------------------------------------------------
-
+    # Select Admin 2, if required.
     if admin_level >= 2:
 
-        admin2_options = list_admin2(
-            admin1_name,
-            country_code,
-        )
+        admin2_options = list_admin2(admin1_name, country_code)
 
         if not admin2_options:
             raise RuntimeError(
@@ -161,19 +146,14 @@ if aoi_mode == "1":
         for index, name in enumerate(admin2_options, start=1):
             print(f"{index}. {name}")
 
-        selection = int(
-            input("\nSelect Admin 2 by number: ").strip()
-        )
+        selection = int(input("\nSelect Admin 2 by number: ").strip())
 
         if not 1 <= selection <= len(admin2_options):
             raise ValueError("Invalid Admin 2 selection.")
 
         admin2_name = admin2_options[selection - 1]
 
-    # --------------------------------------------------------
-    # Select Admin 3, if requested
-    # --------------------------------------------------------
-
+    # Select Admin 3, if required.
     if admin_level == 3:
 
         admin3_options = list_admin3(
@@ -192,19 +172,14 @@ if aoi_mode == "1":
         for index, name in enumerate(admin3_options, start=1):
             print(f"{index}. {name}")
 
-        selection = int(
-            input("\nSelect Admin 3 by number: ").strip()
-        )
+        selection = int(input("\nSelect Admin 3 by number: ").strip())
 
         if not 1 <= selection <= len(admin3_options):
             raise ValueError("Invalid Admin 3 selection.")
 
         admin3_name = admin3_options[selection - 1]
 
-    # --------------------------------------------------------
-    # Retrieve the selected administrative geometry
-    # --------------------------------------------------------
-
+    # Retrieve the selected administrative geometry.
     aoi_shape = get_admin_geometry(
         level=admin_level,
         country_code=country_code,
@@ -213,8 +188,12 @@ if aoi_mode == "1":
         admin3_name=admin3_name,
     )
 
-    # Convert the Shapely geometry to GeoJSON-style mapping
-    # for the existing STAC search workflow.
+    if aoi_shape is None or aoi_shape.is_empty:
+        raise ValueError("The selected administrative AOI is empty.")
+
+    if not aoi_shape.is_valid:
+        raise ValueError("The selected administrative AOI is invalid.")
+
     geometry = aoi_shape.__geo_interface__
 
     print("\nSelected administrative AOI:")
@@ -229,16 +208,14 @@ if aoi_mode == "1":
         print(f"Admin 3: {admin3_name}")
 
     print(f"Geometry type: {aoi_shape.geom_type}")
-    print(f"Geometry valid: {aoi_shape.is_valid}")
     print(f"Geometry bounds: {aoi_shape.bounds}")
+
 
 elif aoi_mode == "2":
 
     latitude = float(input("Enter latitude: "))
     longitude = float(input("Enter longitude: "))
-    radius_km = float(
-        input("Enter processing radius in km: ")
-    )
+    radius_km = float(input("Enter processing radius in km: "))
 
     if not -90 <= latitude <= 90:
         raise ValueError("Latitude must be between -90 and 90.")
@@ -246,33 +223,28 @@ elif aoi_mode == "2":
     if not -180 <= longitude <= 180:
         raise ValueError("Longitude must be between -180 and 180.")
 
-    if radius_km <= 0:
+    if not math.isfinite(radius_km) or radius_km <= 0:
         raise ValueError(
-            "Processing radius must be greater than zero."
+            "Processing radius must be a finite positive number."
         )
 
     lat_offset = radius_km / 111.0
 
-    cos_latitude = abs(
-        math.cos(math.radians(latitude))
-    )
+    cos_latitude = abs(math.cos(math.radians(latitude)))
 
     if cos_latitude < 1e-6:
         raise ValueError(
-            "This radius-based bounding box is unsuitable near the poles."
+            "Radius-based bounding boxes are unsuitable near the poles."
         )
 
     lon_offset = radius_km / (111.0 * cos_latitude)
 
-    min_lon = longitude - lon_offset
-    max_lon = longitude + lon_offset
+    min_lon = max(-180.0, longitude - lon_offset)
+    max_lon = min(180.0, longitude + lon_offset)
     min_lat = max(-90.0, latitude - lat_offset)
     max_lat = min(90.0, latitude + lat_offset)
 
-    aoi_shape = box(
-        min_lon, min_lat, max_lon, max_lat
-    )
-
+    aoi_shape = box(min_lon, min_lat, max_lon, max_lat)
     geometry = aoi_shape.__geo_interface__
 
     print("\nCoordinate-based AOI bounding box:")
@@ -282,9 +254,9 @@ elif aoi_mode == "2":
 else:
     raise ValueError("Choose AOI input method 1 or 2.")
 
-# ============================================================
-# 2. MONTHLY DATE AND PROCESSING INPUTS
-# ============================================================
+# ------------------------------------------------------------
+# 2A. SELECT YEAR AND MONTH
+# ------------------------------------------------------------
 
 year = int(input("Enter year (e.g. 2026): "))
 month = int(input("Enter month (1-12): "))
@@ -304,12 +276,20 @@ end = next_month - timedelta(days=1)
 start_date = start.isoformat()
 end_date = end.isoformat()
 
+# ------------------------------------------------------------
+# 2B. SELECT TEMPORAL COMPOSITE METHOD
+# ------------------------------------------------------------
+
 composite_method = input(
     "Choose composite method (median/mean): "
 ).strip().lower()
 
 if composite_method not in {"median", "mean"}:
     raise ValueError("Choose either median or mean.")
+
+# ------------------------------------------------------------
+# 2C. SET MAXIMUM SCENE CLOUD COVER
+# ------------------------------------------------------------
 
 cloud_cover = float(
     input("Enter maximum scene cloud cover (0-100%): ")
@@ -318,24 +298,87 @@ cloud_cover = float(
 if not 0 <= cloud_cover <= 100:
     raise ValueError("Cloud cover must be between 0 and 100.")
 
-process = input(
-    "Select processing option (RGB or NDVI): "
-).strip().upper()
+# ------------------------------------------------------------
+# 2D. SELECT THE EO PRODUCT
+# ------------------------------------------------------------
 
-if process not in {"RGB", "NDVI"}:
-    raise ValueError("Choose either RGB or NDVI.")
+print("\nAvailable processing products:")
+print("1. RGB          - True-colour composite")
+print("2. FALSE_COLOR  - False-colour infrared composite")
+print("3. NDVI         - Vegetation index")
+print("4. NDWI         - Open-water index")
+print("5. NDMI         - Vegetation moisture index")
+print("6. NBR          - Normalized Burn Ratio")
+print("7. NBR2         - Normalized Burn Ratio 2")
+print("8. QUALITY_MASK - Quality mask")
+
+product_options = {
+    "1": "RGB",
+    "2": "FALSE_COLOR",
+    "3": "NDVI",
+    "4": "NDWI",
+    "5": "NDMI",
+    "6": "NBR",
+    "7": "NBR2",
+    "8": "QUALITY_MASK",
+}
+
+choice = (
+    input("\nSelect product (enter number or name): ")
+    .strip()
+    .upper()
+    .replace(" ", "_")
+    .replace("-", "_")
+)
+
+process = product_options.get(choice, choice)
+
+# Accept common alternative names.
+aliases = {
+    "FALSE_COLOUR": "FALSE_COLOR",
+    "FALSE_COLOR_IR": "FALSE_COLOR",
+    "NWI": "NDWI",
+    "WATER_INDEX": "NDWI",
+    "CLOUD_MASK": "QUALITY_MASK",
+    "MASK": "QUALITY_MASK",
+}
+
+process = aliases.get(process, process)
+
+valid_products = {
+    "RGB",
+    "FALSE_COLOR",
+    "NDVI",
+    "NDWI",
+    "NDMI",
+    "NBR",
+    "NBR2",
+    "QUALITY_MASK",
+}
+
+if process not in valid_products:
+    raise ValueError(
+        f"Unsupported product: {process}. "
+        f"Choose one of: {', '.join(sorted(valid_products))}."
+    )
+
+# ------------------------------------------------------------
+# 2E. PRINT THE SELECTED INPUTS
+# ------------------------------------------------------------
 
 print("\nUser inputs:")
 print(f"AOI mode: {aoi_mode}")
 
-if admin1_name is not None:
+if aoi_mode == "1":
+    print(f"Country: {country_code}")
+    print(f"Administrative level: {admin_level}")
     print(f"Admin 1: {admin1_name}")
 
-if admin2_name is not None:
-    print(f"Admin 2: {admin2_name}")
+    if admin2_name:
+        print(f"Admin 2: {admin2_name}")
 
-if admin3_name is not None:
-    print(f"Admin 3: {admin3_name}")
+    if admin3_name:
+        print(f"Admin 3: {admin3_name}")
 else:
     print(f"Latitude: {latitude}")
     print(f"Longitude: {longitude}")
@@ -345,8 +388,6 @@ print(f"Date range: {start_date} to {end_date}")
 print(f"Composite method: {composite_method}")
 print(f"Maximum scene cloud cover: {cloud_cover}%")
 print(f"Requested product: {process}")
-
-
 # ============================================================
 # 3. AOI READY FOR STAC SEARCH
 # ============================================================
@@ -438,7 +479,48 @@ for band_name in ("red", "green", "blue", "nir"):
         print("Offset:", raster_bands[0].get("offset"))
     else:
         print("Scale and offset are not specified in this asset metadata.")
-        
+
+# ============================================================
+# DEDUPLICATE ALTERNATE PROCESSING VERSIONS
+# ============================================================
+
+def baseline_version(item):
+    value = item.properties.get("s2:processing_baseline") or "0"
+
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return (0,)
+
+
+items_by_acquisition = {}
+
+for item in items:
+    parts = item.id.split("_")
+
+    # Example:
+    # S2B_43QHC_20200226_1_L2A -> S2B_43QHC_20200226
+    acquisition_key = (
+        "_".join(parts[:3]) if len(parts) >= 3 else item.id
+    )
+
+    previous = items_by_acquisition.get(acquisition_key)
+
+    if (
+        previous is None
+        or baseline_version(item) > baseline_version(previous)
+    ):
+        items_by_acquisition[acquisition_key] = item
+
+items = sorted(
+    items_by_acquisition.values(),
+    key=lambda item: item.properties.get("datetime", ""),
+)
+
+print(
+    f"\nRetained {len(items)} scenes after selecting "
+    "the highest processing baseline per acquisition."
+)
 
 print(f"\nFound {len(items)} scene(s):")
 
@@ -476,7 +558,7 @@ print(f"Scene cloud cover: {best_cloud_cover}")
 
 print("\nLoading Sentinel-2 scenes for compositing...")
 
-data = load_sentinel2_items(items, geometry)
+data = load_sentinel2_items(items, geometry, process)
 
 if data is None:
     raise RuntimeError("Sentinel-2 data loading returned no dataset.")
@@ -521,10 +603,39 @@ print("Pixels outside AOI are set to NoData.")
 REFLECTANCE_SCALE = 0.0001
 SOURCE_NODATA = 0
 
-offset_flags = {
-    item.properties.get("earthsearch:boa_offset_applied")
-    for item in items
-}
+print("\nSCENE-BY-SCENE OFFSET AUDIT")
+print("=" * 75)
+
+offset_flags = set()
+
+for item in items:
+    properties = item.properties
+    offset_flag = properties.get("earthsearch:boa_offset_applied")
+    baseline = properties.get("s2:processing_baseline")
+
+    offset_flags.add(offset_flag)
+
+    print(f"\nScene: {item.id}")
+    print("  Processing baseline:", baseline)
+    print("  BOA offset applied flag:", offset_flag)
+
+    for band_name in ["red", "green", "blue", "nir", "swir16", "swir22"]:
+        asset = item.assets.get(band_name)
+
+        if asset is None:
+            continue
+
+        raster_bands = asset.extra_fields.get("raster:bands") or []
+        band_metadata = raster_bands[0] if raster_bands else {}
+
+        print(
+            f"  {band_name}: "
+            f"scale={band_metadata.get('scale')}, "
+            f"offset={band_metadata.get('offset')}, "
+            f"nodata={band_metadata.get('nodata')}"
+        )
+
+print("\nDistinct BOA offset flags:", offset_flags)
 
 if len(offset_flags) != 1 or None in offset_flags:
     raise RuntimeError(
@@ -538,12 +649,25 @@ boa_offset_already_applied = offset_flags.pop()
 print("\nREFLECTANCE SCALING CHECK")
 print("BOA offset already applied:", boa_offset_already_applied)
 
-for band_name in ["red", "green", "blue", "nir"]:
+for band_name in [
+    "red", "green", "blue", "nir", "swir16", "swir22"
+]:
+    # SWIR bands are optional and depend on the requested product.
+    if band_name not in data.data_vars:
+        continue
+
+    # Get the source band BEFORE using it.
     raw_band = data[band_name]
 
-    # Exclude source NoData and zeros introduced outside the AOI.
-    valid_pixels = (raw_band != SOURCE_NODATA) & raw_band.notnull()
+    # Keep the original zero/NoData pixels and pixels outside the AOI
+    # out of reflectance calculations.
+    valid_pixels = (
+        raw_band.notnull()
+        & (raw_band != SOURCE_NODATA)
+    )
 
+    # Apply the scale once. Apply the offset only when required by
+    # the verified convention of the source pixel values.
     if boa_offset_already_applied:
         reflectance = (
             raw_band.astype("float32") * REFLECTANCE_SCALE
@@ -566,7 +690,13 @@ for band_name in ["red", "green", "blue", "nir"]:
         "source_nodata": SOURCE_NODATA,
     })
 
-print("Reflectance conversion completed.")
+    print(
+        f"{band_name.upper()}: "
+        f"scale={REFLECTANCE_SCALE}, "
+        f"additional offset={offset_used}"
+    )
+
+
 # ============================================================
 # 8. SCL MASKING, VALIDATION AND TEMPORAL COMPOSITE
 # ============================================================
@@ -882,18 +1012,33 @@ print(result)
 # 10. EXPORT THE REQUESTED EO PRODUCT AS A COG
 # ============================================================
 
-if process == "RGB":
-    output_file = OUTPUT_DIR / "rgb.tif"
-elif process == "NDVI":
-    output_file = OUTPUT_DIR / "ndvi.tif"
-else:
+output_files = {
+    "RGB": "rgb.tif",
+    "FALSE_COLOR": "false_color.tif",
+    "NDVI": "ndvi.tif",
+    "NDWI": "ndwi.tif",
+    "NDMI": "ndmi.tif",
+    "NBR": "nbr.tif",
+    "NBR2": "nbr2.tif",
+    "QUALITY_MASK": "quality_mask.tif",
+}
+
+if process not in output_files:
     raise ValueError(f"Unsupported processing option: {process}")
+
+output_file = OUTPUT_DIR / output_files[process]
 
 print(f"\nExporting {process} product to: {output_file}")
 
 export_cog(result, output_file)
 
-print("COG export completed.")
+if not output_file.is_file():
+    raise RuntimeError(
+        f"COG export did not create the expected file: {output_file}"
+    )
+    
+
+print("COG export completed:", output_file)
 
 # ============================================================
 # 10A. REPORT VALID AND NODATA PIXEL COUNTS
@@ -953,11 +1098,13 @@ print("==========================================")
 # 11. CREATE THE REQUESTED PNG PREVIEW
 # ============================================================
 
-preview_file = OUTPUT_DIR / (
-    "rgb_preview.png"
-    if process == "RGB"
-    else "ndvi_preview.png"
-)
+preview_names = {
+    "RGB": "rgb_preview.png",
+    "FALSE_COLOR": "false_color_preview.png",
+    "NDVI": "ndvi_preview.png",
+}
+
+preview_file = OUTPUT_DIR / preview_names[process]
 
 if process == "RGB":
 
@@ -966,6 +1113,20 @@ if process == "RGB":
     save_rgb_preview(
         result,
         preview_file,
+        max_preview_dimension=1600,
+    )
+
+    print("Preview saved:", preview_file)
+
+elif process == "FALSE_COLOR":
+
+    print("Creating reduced-resolution false-colour preview...")
+
+    save_color_preview(
+        result,
+        preview_file,
+        band_order=("nir", "red", "green"),
+        title="Sentinel-2 false-colour infrared composite",
         max_preview_dimension=1600,
     )
 
@@ -1008,56 +1169,57 @@ elif process == "NDVI":
 
     ndvi_data = ndvi_preview_result.compute()
 
-ndvi_values = np.asarray(
-    ndvi_data.values,
-    dtype=np.float32,
-).squeeze()
+    ndvi_values = np.asarray(
+        ndvi_data.values,
+        dtype=np.float32,
+    ).squeeze()
 
+    if ndvi_values.ndim != 2:
+        raise ValueError(
+            "NDVI preview requires a 2D array. "
+            "Check the dimensions returned by process_data()."
+        )
 
-if ndvi_values.ndim != 2:
-    raise ValueError(
-        "NDVI preview requires a 2D array. "
-        "Check the dimensions returned by process_data()."
+    # Mask NaN, infinity and values outside the theoretical NDVI range.
+    valid_ndvi = (
+        np.isfinite(ndvi_values)
+        & (ndvi_values >= -1)
+        & (ndvi_values <= 1)
     )
 
-# Mask NaN, infinity and values outside the theoretical NDVI range.
-valid_ndvi = (
-    np.isfinite(ndvi_values)
-    & (ndvi_values >= -1)
-    & (ndvi_values <= 1)
-)
+    ndvi_masked = np.ma.masked_where(
+        ~valid_ndvi,
+        ndvi_values,
+    )
 
-ndvi_masked = np.ma.masked_where(
-    ~valid_ndvi,
-    ndvi_values,
-)
+    cmap = plt.get_cmap("RdYlGn").copy()
+    cmap.set_bad((0, 0, 0, 0))
 
-cmap = plt.get_cmap("RdYlGn").copy()
-cmap.set_bad((0, 0, 0, 0))
+    fig, ax = plt.subplots(figsize=(8, 7))
 
-fig, ax = plt.subplots(figsize=(8, 7))
+    image = ax.imshow(
+        ndvi_masked,
+        cmap=cmap,
+        vmin=-1,
+        vmax=1,
+    )
 
-image = ax.imshow(
-    ndvi_masked,
-    cmap=cmap,
-    vmin=-1,
-    vmax=1,
-)
+    fig.colorbar(image, ax=ax, label="NDVI")
+    ax.set_title("Sentinel-2 NDVI Preview")
+    ax.set_axis_off()
 
-fig.colorbar(image, ax=ax, label="NDVI")
-ax.set_title("Sentinel-2 NDVI Preview")
-ax.set_axis_off()
+    fig.tight_layout()
+    fig.savefig(
+        preview_file,
+        dpi=150,
+        bbox_inches="tight",
+        transparent=True,
+    )
+    plt.close(fig)
 
-fig.tight_layout()
-fig.savefig(
-    preview_file,
-    dpi=150,
-    bbox_inches="tight",
-    transparent=True,
-)
-plt.close(fig)
-
-print("Preview saved:", preview_file)
+    print("Preview saved:", preview_file)
+else:
+    raise ValueError(f"Unsupported preview product: {process}")
 
 
 # ============================================================

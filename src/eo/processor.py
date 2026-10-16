@@ -1,6 +1,6 @@
 
 from eo.indices import calculate_ndvi
-from eo.composites import create_rgb
+from eo.composites import create_rgb, create_false_color
 
 
 def process_data(data, process):
@@ -12,6 +12,9 @@ def process_data(data, process):
 
     if process == "RGB":
         result = create_rgb(data)
+
+    elif process == "FALSE_COLOR":
+        result = create_false_color(data)
 
     elif process == "NDVI":
         red = data["red"]

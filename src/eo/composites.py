@@ -34,6 +34,23 @@ def create_rgb(data):
     return rgb_stack
 
 
+def create_false_color(data):
+    """
+    Create a false-colour infrared composite from Sentinel-2 data.
+
+    Display channels are NIR (red), red (green), and green (blue).
+    """
+
+    bands = ["nir", "red", "green"]
+    false_color = data[bands].to_array(dim="band")
+    false_color = false_color.assign_coords(band=bands)
+    false_color.attrs.update({
+        "long_name": "Sentinel-2 false-colour infrared composite",
+        "display_channels": "NIR, red, green",
+    })
+    return false_color
+
+
 
 
 def create_temporal_composite(data, method="median"):
@@ -77,24 +94,54 @@ def save_rgb_preview(
     max_preview_dimension=1600,
 ):
     """Save an RGB PNG preview using optional shared display limits."""
+    return save_color_preview(
+        data,
+        output_path,
+        band_order=("red", "green", "blue"),
+        title="Sentinel-2 RGB composite",
+        stretch_limits=stretch_limits,
+        max_preview_dimension=max_preview_dimension,
+    )
+
+
+def save_color_preview(
+    data,
+    output_path,
+    *,
+    band_order,
+    title,
+    stretch_limits=None,
+    max_preview_dimension=1600,
+):
+    """Save a three-channel colour composite preview."""
     import numpy as np
     import matplotlib.pyplot as plt
 
-    rgb = create_rgb(data) if isinstance(data, xr.Dataset) else data
+    if isinstance(data, xr.Dataset):
+        rgb = data[list(band_order)].to_array(dim="band")
+        rgb = rgb.assign_coords(band=list(band_order))
+    else:
+        rgb = data
 
     if "time" in rgb.dims:
-        raise ValueError("Create the temporal composite before the RGB preview.")
+        raise ValueError(
+            "Create the temporal composite before the colour preview."
+        )
 
     if "band" not in rgb.dims or "band" not in rgb.coords:
-        raise ValueError("RGB data must have a labelled band dimension.")
+        raise ValueError(
+            "Colour-composite data must have a labelled band dimension."
+        )
 
-    expected = ["red", "green", "blue"]
+    expected = list(band_order)
     labels = [str(value) for value in rgb.band.values]
 
-    if not all(name in labels for name in expected):
-        raise ValueError(f"Expected RGB bands {expected}; found {labels}.")
+    if len(expected) != 3 or not all(name in labels for name in expected):
+        raise ValueError(
+            f"Expected colour bands {expected}; found {labels}."
+        )
 
-     # ------------------------------------------------------------
+    # ------------------------------------------------------------
     # Reduce resolution for preview generation only.
     # The original composite and exported COG remain unchanged.
     # ------------------------------------------------------------
@@ -166,7 +213,7 @@ def save_rgb_preview(
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(display, alpha=alpha)
-    ax.set_title("Sentinel-2 RGB composite")
+    ax.set_title(title)
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(
@@ -178,4 +225,3 @@ def save_rgb_preview(
     plt.close(fig)
 
     return limits
-

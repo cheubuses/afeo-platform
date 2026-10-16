@@ -6,12 +6,13 @@ This project implements a Python-based Earth Observation (EO) processing pipelin
 
 The pipeline is being developed as the processing component of the AFROSAT platform. Its outputs are intended to support downstream applications and integration with a FastAPI backend.
 
-The current workflow supports two products:
+The current workflow supports these image products:
 
 - **RGB composite:** A three-band red, green and blue surface-reflectance composite.
+- **False-colour infrared composite:** NIR displayed as red, red displayed as green, and green displayed as blue.
 - **NDVI:** The Normalized Difference Vegetation Index calculated from red and near-infrared surface reflectance.
 
-Outputs include Cloud Optimized GeoTIFFs (COGs), PNG previews, masking statistics and run metadata.
+Each product is exported as a Cloud Optimized GeoTIFF (COG) with a matching PNG preview. Outputs also include masking statistics and run metadata.
 
 ## 2. Core Features
 
@@ -91,9 +92,11 @@ The workflow also calculates:
 
 A `valid_observation_count.tif` raster is generated when the input contains a time dimension and the count export completes successfully.
 
-### RGB and NDVI Products
+### RGB, False-Colour and NDVI Products
 
 **RGB** uses the red, green and blue bands in the expected order and retains floating-point reflectance values in the exported raster.
+
+**False-colour infrared** maps Sentinel-2 NIR (B08) to the red display channel, red (B04) to green, and green (B03) to blue. This highlights vegetation in red tones. The exported three-band raster and preview use this same channel order.
 
 **NDVI** is calculated using:
 
@@ -105,7 +108,7 @@ The current `calculate_ndvi()` implementation expects already-scaled surface ref
 
 ### Previews
 
-The application generates PNG previews for RGB and NDVI products.
+The application generates PNG previews for RGB, false-colour infrared and NDVI products.
 
 It also generates before-masking and after-masking RGB previews using shared display-stretch limits, enabling a more consistent visual comparison of the masking effect.
 
@@ -151,12 +154,12 @@ The current workflow is:
 9. Calculate masking statistics and export the valid-observation-count raster.
 10. Generate the masked temporal composite.
 11. Generate the after-masking preview and compare spatial grids and band statistics.
-12. Calculate the requested RGB or NDVI product.
+12. Calculate the requested RGB, false-colour infrared or NDVI product.
 13. Export the product as a COG.
 14. Generate the product preview and output-pixel quality report.
 15. Generate and save processing metadata.
 
-The current interactive interface requests one product per run: RGB or NDVI.
+The interactive interface requests one product per run.
 
 ## 4. Project Structure
 
@@ -202,10 +205,10 @@ Output files depend on the selected processing product and whether the current r
 | `aoi.py` | Administrative AOI lookup and geometry retrieval |
 | `stac.py` | STAC catalog connection |
 | `sentinel2.py` | Sentinel-2 search, reference-scene selection and data loading |
-| `composites.py` | RGB construction, temporal composites and RGB previews |
+| `composites.py` | RGB and false-colour construction, temporal composites and colour previews |
 | `masking.py` | SCL masking, alignment checks and masking statistics |
 | `indices.py` | NDVI calculation |
-| `processor.py` | Dispatches the requested RGB or NDVI process |
+| `processor.py` | Dispatches the requested RGB, false-colour or NDVI process |
 | `export.py` | Raster product and COG export |
 | `metadata.py` | Metadata generation and JSON saving |
 | `notebooks/aoi_test.py` | Interactive end-to-end processing workflow |
@@ -226,7 +229,7 @@ The script prompts for:
 3. Processing year and month
 4. Composite method (`median` or `mean`)
 5. Maximum scene cloud cover (0–100%)
-6. Product (`RGB` or `NDVI`)
+6. Product (for example, `RGB`, `FALSE_COLOR` or `NDVI`)
 
 The script derives the date range from the selected month. Arbitrary start and end dates are not currently requested by this interface.
 
