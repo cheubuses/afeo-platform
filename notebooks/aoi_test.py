@@ -831,10 +831,14 @@ else:
 print(
     f"\nCreating masked monthly {composite_method} composite..."
 )
-
-# Keep NIR as well as RGB because NDVI requires red and NIR.
-# NaN values from masking are ignored by mean/median.
-processing_bands = ["red", "green", "blue", "nir"]
+# Keep the standard bands plus any SWIR bands loaded for this product.
+processing_bands = [
+    band
+    for band in [
+        "red", "green", "blue", "nir", "swir16", "swir22"
+    ]
+    if band in masked_data.data_vars
+]
 
 data = masked_data[processing_bands]
 
@@ -842,9 +846,6 @@ data = create_temporal_composite(
     data,
     method=composite_method,
 )
-
-print("Masked temporal composite created successfully.")
-print(data)
 # ------------------------------------------------------------
 # 8E. CREATE AFTER-MASKING RGB PREVIEW
 # ------------------------------------------------------------
@@ -1102,6 +1103,10 @@ preview_names = {
     "RGB": "rgb_preview.png",
     "FALSE_COLOR": "false_color_preview.png",
     "NDVI": "ndvi_preview.png",
+    "NDWI": "ndwi_preview.png",
+    "NDMI": "ndmi_preview.png",
+    "NBR": "nbr_preview.png",
+    "NBR2": "nbr2_preview.png",
 }
 
 preview_file = OUTPUT_DIR / preview_names[process]
@@ -1132,7 +1137,7 @@ elif process == "FALSE_COLOR":
 
     print("Preview saved:", preview_file)
 
-elif process == "NDVI":
+elif process in {"NDVI", "NDWI", "NDMI", "NBR", "NBR2"}:
 
     # ------------------------------------------------------------
     # Create a reduced-resolution NDVI preview.
@@ -1205,7 +1210,7 @@ elif process == "NDVI":
     )
 
     fig.colorbar(image, ax=ax, label="NDVI")
-    ax.set_title("Sentinel-2 NDVI Preview")
+    ax.set_title(f"Sentinel-2 {process} Preview")
     ax.set_axis_off()
 
     fig.tight_layout()

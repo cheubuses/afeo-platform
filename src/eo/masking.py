@@ -45,6 +45,8 @@ SCL_EXCLUDED_CLASSES = frozenset(
 )
 
 SPECTRAL_BANDS = ("red", "green", "blue", "nir")
+OPTIONAL_SPECTRAL_BANDS = ("swir16", "swir22")
+
 
 
 def _check_scl_alignment(data, band_name):
@@ -108,63 +110,97 @@ def _check_scl_alignment(data, band_name):
 
 def mask_with_scl(data):
     """
-    Mask red, green, blue and NIR using Sentinel-2 SCL.
+    Mask spectral bands using the Sentinel-2 Scene Classification Layer.
 
-    Parameters
-    ----------
-    data : xarray.Dataset
-        Must contain red, green, blue, nir and scl variables.
+    Required bands:
+        red, green, blue, nir, scl
 
-    Returns
-    -------
-    xarray.Dataset
-        Dataset with excluded spectral pixels set to NaN.
-        The SCL variable is retained for diagnostics.
+    Optional bands:
+        swir16, swir22
+
+    Retains SCL classes 4, 5 and 6.
+    Sets excluded spectral pixels to NaN.
     """
 
-    if "scl" not in data:
+    # --------------------------------------------------------
+    # 1. Validate required inputs
+    # --------------------------------------------------------
+
+    if "scl" not in data.data_vars:
         raise ValueError(
-            "Cannot apply SCL masking: dataset has no 'scl' band. "
-            "Ensure load_sentinel2_items loads bands including 'scl'."
+            "Cannot apply SCL masking: dataset has no 'scl' band."
         )
 
     missing = [
-        band for band in SPECTRAL_BANDS
+        band
+        for band in SPECTRAL_BANDS
         if band not in data.data_vars
     ]
+
     if missing:
         raise ValueError(
             f"Missing required spectral bands: {missing}"
         )
 
-    # Verify grid alignment before constructing the mask.
-    for band_name in SPECTRAL_BANDS:
+    # --------------------------------------------------------
+    # 2. Include optional SWIR bands when available
+    # --------------------------------------------------------
+
+    optional_bands = ("swir16", "swir22")
+
+    bands_to_mask = list(SPECTRAL_BANDS) + [
+        band
+        for band in optional_bands
+        if band in data.data_vars
+    ]
+
+    # --------------------------------------------------------
+    # 3. Validate SCL grid alignment
+    # --------------------------------------------------------
+
+    for band_name in bands_to_mask:
         _check_scl_alignment(data, band_name)
+
+    # --------------------------------------------------------
+    # 4. Construct the clear-pixel mask
+    # --------------------------------------------------------
 
     scl = data["scl"]
 
-    # Unknown SCL values are also excluded.
     known_class = scl.isin(list(SCL_CLASS_NAMES))
     clear_class = scl.isin([4, 5, 6])
-    valid_scl = scl.notnull() & known_class & clear_class
+
+    valid_scl = (
+        scl.notnull()
+        & known_class
+        & clear_class
+    )
+
+    # --------------------------------------------------------
+    # 5. Apply the mask to required and optional bands
+    # --------------------------------------------------------
 
     output = data.copy()
 
-    for band_name in SPECTRAL_BANDS:
+    for band_name in bands_to_mask:
         output[band_name] = data[band_name].where(valid_scl)
 
+    # --------------------------------------------------------
+    # 6. Record masking policy in dataset metadata
+    # --------------------------------------------------------
+
     output.attrs = dict(data.attrs)
+
     output.attrs["scl_mask_excluded_classes"] = sorted(
         SCL_EXCLUDED_CLASSES
     )
     output.attrs["scl_mask_retained_classes"] = [4, 5, 6]
+
     output.attrs["scl_class_2_policy"] = (
-        "Excluded conservatively; dark-area pixels may include "
-        "genuine dark surfaces."
+        "Excluded from the composite."
     )
     output.attrs["scl_class_7_policy"] = (
-        "Excluded because unclassified pixels have uncertain "
-        "surface conditions."
+        "Excluded because the class is unclassified."
     )
 
     return output
