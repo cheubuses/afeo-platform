@@ -170,7 +170,7 @@ def save_color_preview(
             y=downsample_factor,
             x=downsample_factor,
             boundary="trim",
-        ).mean(skipna=True)
+        ).mean()
 
     # Compute the reduced preview, not the full-resolution image.
     rgb = rgb.compute()

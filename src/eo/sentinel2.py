@@ -13,7 +13,7 @@ def search_sentinel2(
     """
 
     search = catalog.search(
-        collections=["sentinel-2-l2a"],
+        collections=["sentinel-2-c1-l2a"],
         intersects=geometry,
         datetime=f"{start_date}/{end_date}",
         query={
@@ -70,101 +70,71 @@ def select_best_scene(items):
     return best_item
 
 
-def load_sentinel2_items(items, geometry, requested_product="RGB"):
+def load_sentinel2_items(
+    items,
+    geometry,
+    requested_product="RGB",
+    *,
+    tile_bounds=None,
+    target_crs=None,
+):
     """
-    Load Sentinel-2 bands needed for the requested EO product.
+    Load Sentinel-2 bands for the requested product.
 
-    RGB, false colour, NDVI and NDWI use the existing 10 m workflow.
-
-    NDMI, NBR and NBR2 load the required SWIR bands on a 20 m grid.
-    SCL is retained for quality masking.
+    Without tile_bounds, retain the existing whole-AOI loading mode.
+    With tile_bounds, load one projected tile at a time.
     """
+    from odc.stac import stac_load
 
     product = requested_product.strip().upper()
 
-    # Bands required by the existing RGB preview and masking workflow.
     bands = ["red", "green", "blue", "nir", "scl"]
 
-    # Load only the additional SWIR bands required by the product.
     if product == "NDMI":
         bands.append("swir16")
-
     elif product == "NBR":
         bands.append("swir22")
-
     elif product == "NBR2":
         bands.extend(["swir16", "swir22"])
 
-    # Keep the existing loading behaviour for products using
-    # only the standard visible/NIR bands.
-    load_options = {}
-
-    # Use a 20 m output grid for indices requiring SWIR.
-    if product in {"NDMI", "NBR", "NBR2"}:
-        load_options["resolution"] = 20
-
-        # Continuous reflectance bands use bilinear resampling.
-        # SCL is categorical, so it must use nearest-neighbour.
-        load_options["resampling"] = {
-            band: ("nearest" if band == "scl" else "bilinear")
-            for band in bands
-        }
-
-    data = stac_load(
-        list(items),
-        bands=bands,
-        geopolygon=geometry,
-        chunks={"x": 1024, "y": 1024},
-        groupby="solar_day",
-        **load_options,
+    resolution = (
+        20 if product in {"NDMI", "NBR", "NBR2"} else 10
     )
 
-    return data
-
-
-def load_sentinel2_items(items, geometry, requested_product="RGB"):
-    """
-    Load Sentinel-2 bands required for the requested product.
-
-    Spatial chunks are 1024 x 1024.
-    SWIR-based indices use a 20 m output grid.
-    """
-
-    product = requested_product.strip().upper()
-
-    # Keep the core bands for RGB previews and SCL masking.
-    bands = ["red", "green", "blue", "nir", "scl"]
-
-    if product == "NDMI":
-        bands.append("swir16")
-
-    elif product == "NBR":
-        bands.append("swir22")
-
-    elif product == "NBR2":
-        bands.extend(["swir16", "swir22"])
-
     load_options = {
+        "bands": bands,
         "chunks": {"x": 1024, "y": 1024},
         "groupby": "solar_day",
-    }
-
-    # SWIR bands are native 20 m, so use a 20 m grid
-    # for the moisture and burn indices.
-    if product in {"NDMI", "NBR", "NBR2"}:
-        load_options["resolution"] = 20
-        load_options["resampling"] = {
+        "resampling": {
             band: (
                 "nearest" if band == "scl" else "bilinear"
             )
             for band in bands
-        }
+        },
+    }
 
-    data = stac_load(
-        list(items),
-        bands=bands,
-        geopolygon=geometry,
-        **load_options,
-    )
+    if tile_bounds is None:
+        if geometry is None:
+            raise ValueError(
+                "A geometry is required for whole-AOI loading."
+            )
 
-    return data
+        load_options["geopolygon"] = geometry
+
+    else:
+        if target_crs is None:
+            raise ValueError(
+                "target_crs is required when loading a tile."
+            )
+
+        xmin, ymin, xmax, ymax = tile_bounds
+
+        load_options.update({
+            "x": (xmin, xmax),
+            "y": (ymin, ymax),
+            "crs": target_crs,
+            "resolution": resolution,
+            "anchor": "edge",
+        })
+
+    return stac_load(list(items), **load_options)
