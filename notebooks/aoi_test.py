@@ -552,16 +552,53 @@ print(f"Selected scene: {best_item.id}")
 print(f"Scene cloud cover: {best_cloud_cover}")
 
 
+
 # ============================================================
-# 7. LOAD SCENES AND INSPECT DATA
+# 7. PROCESS THE REQUESTED AOI USING SPATIAL TILING
 # ============================================================
 
-print("\nLoading Sentinel-2 scenes for compositing...")
+from eo.tiled_pipeline import process_tiled_aoi
 
-data = load_sentinel2_items(items, geometry, process)
+print("\nStarting tiled Sentinel-2 processing...")
 
-if data is None:
-    raise RuntimeError("Sentinel-2 data loading returned no dataset.")
+tiled_result = process_tiled_aoi(
+    items=items,
+    aoi_shape=aoi_shape,
+    process=process,
+    composite_method=composite_method,
+    start_date=start_date,
+    end_date=end_date,
+    cloud_cover_threshold=cloud_cover,
+    reference_item=best_item,
+    output_dir=OUTPUT_DIR,
+    project_root=PROJECT_ROOT,
+    input_parameters={
+        "latitude": latitude,
+        "longitude": longitude,
+        "radius_km": radius_km,
+        "country_code": country_code,
+        "admin_level": admin_level,
+        "admin1_name": admin1_name,
+        "admin2_name": admin2_name,
+        "admin3_name": admin3_name,
+    },
+    tile_size_m=5000,
+)
+
+print("\n==========================================")
+print("       PROCESSING COMPLETED")
+print("==========================================")
+print(f"Product:     {process}")
+print(f"Composite:   {composite_method}")
+print(f"Tile count:  {tiled_result['tile_count']}")
+print(f"COG:         {tiled_result['output_file']}")
+print(f"Metadata:    {tiled_result['metadata_file']}")
+print(f"Manifest:    {tiled_result['manifest_file']}")
+print(
+    f"Elapsed:     "
+    f"{tiled_result['elapsed_seconds']:.2f} seconds"
+)
+print("==========================================")
 
 
 # ============================================================

@@ -89,7 +89,7 @@ manifest_tiles = []
 # ==================================================
 
 for index, tile in enumerate(tiles, start=1):
-        tile_started = time.perf_counter()
+    tile_started = time.perf_counter()
 
     tile_id = tile["tile_id"]
 
@@ -97,8 +97,11 @@ for index, tile in enumerate(tiles, start=1):
     print(f"TILE {index}/{len(tiles)}: {tile_id}")
     print("Bounds:", tile["bounds"])
     print("=" * 60)
+    
 
     # Load imagery for this tile only.
+    load_started = time.perf_counter()
+
     data = load_sentinel2_items(
         items=items,
         geometry=None,
@@ -107,11 +110,27 @@ for index, tile in enumerate(tiles, start=1):
         target_crs=target_crs,
     )
 
+    load_elapsed = time.perf_counter() - load_started
+    print(f"  Load setup time: {load_elapsed:.2f} seconds")
+
     if data.rio.crs is None:
         raise RuntimeError(f"{tile_id}: missing raster CRS.")
 
     # Mask everything outside the exact AOI intersection.
     tile_geometry = tile["aoi_geometry_wgs84"]
+    clip_started = time.perf_counter()
+
+    data = data.rio.clip(
+        geometries=[tile_geometry.__geo_interface__],
+        crs="EPSG:4326",
+        drop=False,
+        all_touched=False,
+    )
+
+    print(
+        f"  AOI clipping time: "
+        f"{time.perf_counter() - clip_started:.2f} seconds"
+    )
 
     data = data.rio.clip(
         geometries=[tile_geometry.__geo_interface__],
@@ -122,6 +141,8 @@ for index, tile in enumerate(tiles, start=1):
 
     # Apply the scale and offset from each asset's STAC metadata.
     # odc-stac does not automatically apply raster:bands scale/offset.
+    scaling_started = time.perf_counter()
+
     for band_name in [
         "red", "green", "blue", "nir", "swir16", "swir22"
     ]:
@@ -185,9 +206,22 @@ for index, tile in enumerate(tiles, start=1):
             raw.astype("float32") * scale + offset
         ).where(valid)
 
+    print(
+        f"  Scaling loop time: "
+        f"{time.perf_counter() - scaling_started:.2f} seconds"
+    )
+
     # Apply SCL quality masking before temporal compositing.
+    mask_started = time.perf_counter()
+
     masked_data = mask_with_scl(data)
 
+    print(
+        f"  SCL masking time: "
+        f"{time.perf_counter() - mask_started:.2f} seconds"
+    )
+
+    # Keep the bands required for the requested product.
     processing_bands = [
         band
         for band in [
@@ -196,23 +230,44 @@ for index, tile in enumerate(tiles, start=1):
         if band in masked_data.data_vars
     ]
 
+    # Create the temporal composite.
+    composite_started = time.perf_counter()
+
     composite = create_temporal_composite(
         masked_data[processing_bands],
         method=COMPOSITE_METHOD,
     )
 
+    print(
+        f"  Composite setup time: "
+        f"{time.perf_counter() - composite_started:.2f} seconds"
+    )
+  
+  
+  
     # Calculate the requested product.
+    product_started = time.perf_counter()
     result = process_data(composite, PRODUCT)
+    print(
+        f"  Product calculation time: "
+        f"{time.perf_counter() - product_started:.2f} seconds"
+    )
 
     if result is None:
         raise RuntimeError(
             f"{tile_id}: {PRODUCT} returned no result."
         )
 
-    # Export the tile as a COG.
+        # Export the tile as a COG.
     tile_file = RUN_DIR / f"{PRODUCT.lower()}_{tile_id}.tif"
+    export_started = time.perf_counter()
 
     export_cog(result, tile_file)
+
+    print(
+        f"  COG export time: "
+        f"{time.perf_counter() - export_started:.2f} seconds"
+    )
 
     if not tile_file.is_file():
         raise RuntimeError(
@@ -245,7 +300,12 @@ for index, tile in enumerate(tiles, start=1):
     del data, masked_data, composite, result
     gc.collect()
 
-    print(f"Completed tile {index}/{len(tiles)}: {tile_id}")
+    tile_elapsed = time.perf_counter() - tile_started
+
+    print(
+        f"Completed tile {index}/{len(tiles)}: {tile_id} "
+        f"| elapsed: {tile_elapsed:.2f} seconds"
+    )
 
 
 # ==================================================

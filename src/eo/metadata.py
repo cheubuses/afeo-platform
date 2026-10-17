@@ -121,41 +121,83 @@ def create_metadata(
             mapping(box(*src.bounds)),
         )
 
+                # Calculate raster statistics one block at a time.
+        # This avoids loading a complete large mosaic into RAM.
         band_statistics = []
+        total_raster_pixels = src.width * src.height
 
         for band_index in range(1, src.count + 1):
-            band = src.read(band_index, masked=True)
-            values = np.asarray(band.data)
-            valid = (
-                ~np.ma.getmaskarray(band)
-                & np.isfinite(values)
-            )
-            valid_values = values[valid]
+
+            valid_count = 0
+            sum_values = 0.0
+            min_value = None
+            max_value = None
+
+            for _, window in src.block_windows(band_index):
+
+                band = src.read(
+                    band_index,
+                    window=window,
+                    masked=True,
+                )
+
+                values = np.asarray(
+                    band.data,
+                    dtype=np.float64,
+                )
+
+                valid_mask = (
+                    ~np.ma.getmaskarray(band)
+                    & np.isfinite(values)
+                )
+
+                valid_values = values[valid_mask]
+
+                if valid_values.size == 0:
+                    continue
+
+                block_count = int(valid_values.size)
+                block_min = float(valid_values.min())
+                block_max = float(valid_values.max())
+                block_sum = float(
+                    np.sum(valid_values, dtype=np.float64)
+                )
+
+                valid_count += block_count
+                sum_values += block_sum
+
+                min_value = (
+                    block_min
+                    if min_value is None
+                    else min(min_value, block_min)
+                )
+
+                max_value = (
+                    block_max
+                    if max_value is None
+                    else max(max_value, block_max)
+                )
 
             stats = {
                 "band_index": band_index,
                 "name": src.descriptions[band_index - 1],
                 "dtype": src.dtypes[band_index - 1],
-                "valid_pixels": int(valid_values.size),
-                "nodata_pixels": int(src.width * src.height - valid_values.size),
+                "valid_pixels": valid_count,
+                "nodata_pixels": (
+                    total_raster_pixels - valid_count
+                ),
                 "valid_percentage": round(
-                    float(valid_values.size / (src.width * src.height) * 100),
+                    valid_count / total_raster_pixels * 100,
                     4,
                 ),
+                "minimum": min_value,
+                "maximum": max_value,
+                "mean": (
+                    sum_values / valid_count
+                    if valid_count
+                    else None
+                ),
             }
-
-            if valid_values.size:
-                stats.update({
-                    "minimum": float(valid_values.min()),
-                    "maximum": float(valid_values.max()),
-                    "mean": float(valid_values.mean()),
-                })
-            else:
-                stats.update({
-                    "minimum": None,
-                    "maximum": None,
-                    "mean": None,
-                })
 
             band_statistics.append(stats)
 
