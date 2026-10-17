@@ -1,0 +1,323 @@
+
+import gc
+import json
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import rioxarray
+from pystac_client import Client
+from shapely.geometry import box
+
+from eo.sentinel2 import search_sentinel2, load_sentinel2_items
+from eo.tiling import build_aoi_tiles, choose_target_crs
+from eo.masking import mask_with_scl
+from eo.composites import create_temporal_composite
+from eo.processor import process_data
+from eo.export import export_cog
+
+
+# ==================================================
+# 1. PROCESSING SETTINGS
+# ==================================================
+
+AOI = box(
+    35.981971, 1.981982,
+    36.018029, 2.018018,
+)
+
+START_DATE = "2026-02-01"
+END_DATE = "2026-02-28"
+MAX_CLOUD = 20
+PRODUCT = "NDMI"
+COMPOSITE_METHOD = "median"
+TILE_SIZE_M = 5000
+
+RUN_DIR = Path("outputs/tiles/ndmi_2026_02")
+RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ==================================================
+# 2. SEARCH FOR SCENES ONCE
+# ==================================================
+
+catalog = Client.open(
+    "https://earth-search.aws.element84.com/v1"
+)
+
+items = list(
+    search_sentinel2(
+        catalog=catalog,
+        geometry=AOI.__geo_interface__,
+        start_date=START_DATE,
+        end_date=END_DATE,
+        cloud_cover=MAX_CLOUD,
+    )
+)
+
+if not items:
+    raise RuntimeError("No Sentinel-2 scenes were found.")
+
+target_crs = choose_target_crs(items, AOI)
+
+print("Scenes found:", len(items))
+print("Target CRS:", target_crs)
+
+
+# ==================================================
+# 3. CREATE THE TILE GRID
+# ==================================================
+
+tiles = build_aoi_tiles(
+    AOI,
+    tile_size_m=TILE_SIZE_M,
+    target_crs=target_crs,
+)
+
+if not tiles:
+    raise RuntimeError("No tiles intersect the AOI.")
+
+print("Tiles to process:", len(tiles))
+
+tile_files = []
+manifest_tiles = []
+
+
+# ==================================================
+# 4. PROCESS EACH TILE INDEPENDENTLY
+# ==================================================
+
+for index, tile in enumerate(tiles, start=1):
+    tile_started = time.perf_counter()
+
+    tile_id = tile["tile_id"]
+
+    print("\n" + "=" * 60)
+    print(f"TILE {index}/{len(tiles)}: {tile_id}")
+    print("Bounds:", tile["bounds"])
+    print("=" * 60)
+
+    # Load imagery for this tile only.
+    data = load_sentinel2_items(
+        items=items,
+        geometry=None,
+        requested_product=PRODUCT,
+        tile_bounds=tile["bounds"],
+        target_crs=target_crs,
+    )
+
+    if data.rio.crs is None:
+        raise RuntimeError(f"{tile_id}: missing raster CRS.")
+
+    # Mask everything outside the exact AOI intersection.
+    tile_geometry = tile["aoi_geometry_wgs84"]
+
+    data = data.rio.clip(
+        geometries=[tile_geometry.__geo_interface__],
+        crs="EPSG:4326",
+        drop=False,
+        all_touched=False,
+    )
+
+    # Apply the scale and offset from each asset's STAC metadata.
+    # odc-stac does not automatically apply raster:bands scale/offset.
+    for band_name in [
+        "red", "green", "blue", "nir", "swir16", "swir22"
+    ]:
+
+        if band_name not in data.data_vars:
+            continue
+
+        parameters = set()
+
+        for item in items:
+
+            asset = item.assets.get(band_name)
+
+            if asset is None:
+                raise RuntimeError(
+                    f"{tile_id}: missing {band_name} asset "
+                    f"in scene {item.id}."
+                )
+
+            raster_bands = (
+                asset.extra_fields.get("raster:bands") or []
+            )
+
+            if not raster_bands:
+                raise RuntimeError(
+                    f"{tile_id}: missing raster metadata for "
+                    f"{band_name} in {item.id}."
+                )
+
+            metadata = raster_bands[0]
+
+            if metadata.get("scale") is None:
+                raise RuntimeError(
+                    f"{tile_id}: missing scale for {band_name}."
+                )
+
+            scale = float(metadata["scale"])
+            offset = float(metadata.get("offset", 0.0))
+            nodata = metadata.get("nodata", 0)
+
+            if nodata is None:
+                nodata = 0
+
+            parameters.add(
+                (scale, offset, float(nodata))
+            )
+
+        if len(parameters) != 1:
+            raise RuntimeError(
+                f"{tile_id}: inconsistent radiometric metadata "
+                f"for {band_name}: {parameters}"
+            )
+
+        scale, offset, nodata = next(iter(parameters))
+
+        raw = data[band_name]
+
+        valid = raw.notnull() & (raw != nodata)
+
+        data[band_name] = (
+            raw.astype("float32") * scale + offset
+        ).where(valid)
+
+    # Apply SCL quality masking before temporal compositing.
+    masked_data = mask_with_scl(data)
+
+    processing_bands = [
+        band
+        for band in [
+            "red", "green", "blue", "nir", "swir16", "swir22"
+        ]
+        if band in masked_data.data_vars
+    ]
+
+    composite = create_temporal_composite(
+        masked_data[processing_bands],
+        method=COMPOSITE_METHOD,
+    )
+
+    # Calculate the requested product.
+    result = process_data(composite, PRODUCT)
+
+    if result is None:
+        raise RuntimeError(
+            f"{tile_id}: {PRODUCT} returned no result."
+        )
+
+    # Export the tile as a COG.
+    tile_file = RUN_DIR / f"{PRODUCT.lower()}_{tile_id}.tif"
+
+    export_cog(result, tile_file)
+
+    if not tile_file.is_file():
+        raise RuntimeError(
+            f"{tile_id}: the expected COG was not created."
+        )
+
+    # Verify the exported tile's spatial reference and resolution.
+    with rioxarray.open_rasterio(
+        tile_file, masked=True
+    ) as raster:
+
+        if raster.rio.crs is None:
+            raise RuntimeError(
+                f"{tile_id}: exported COG has no CRS."
+            )
+
+        print("Output shape:", raster.shape)
+        print("Output CRS:", raster.rio.crs)
+        print("Output resolution:", raster.rio.resolution())
+
+    tile_files.append(tile_file)
+
+    manifest_tiles.append({
+        "tile_id": tile_id,
+        "bounds": list(tile["bounds"]),
+        "file": str(tile_file),
+    })
+
+    # Release this tile before starting the next.
+    del data, masked_data, composite, result
+    gc.collect()
+
+    print(f"Completed tile {index}/{len(tiles)}: {tile_id}")
+
+
+# ==================================================
+# 5. SAVE A TILE MANIFEST
+# ==================================================
+
+manifest = {
+    "product": PRODUCT,
+    "start_date": START_DATE,
+    "end_date": END_DATE,
+    "composite_method": COMPOSITE_METHOD,
+    "cloud_cover_threshold_percent": MAX_CLOUD,
+    "target_crs": target_crs,
+    "tile_size_m": TILE_SIZE_M,
+    "scene_ids": [item.id for item in items],
+    "tiles": manifest_tiles,
+}
+
+manifest_file = RUN_DIR / "tile_manifest.json"
+
+with open(manifest_file, "w", encoding="utf-8") as file:
+    json.dump(manifest, file, indent=2)
+
+print("\nAll tile exports completed.")
+print("Tile manifest:", manifest_file)
+
+
+# ==================================================
+# 6. MOSAIC TILES INTO ONE FINAL COG
+# ==================================================
+
+gdalbuildvrt = shutil.which("gdalbuildvrt")
+gdal_translate = shutil.which("gdal_translate")
+
+if not gdalbuildvrt or not gdal_translate:
+
+    print("\nGDAL command-line utilities are unavailable.")
+    print("The individual tile COGs are preserved.")
+    print("Mosaic creation must be completed separately.")
+
+else:
+
+    vrt_file = RUN_DIR / f"{PRODUCT.lower()}_mosaic.vrt"
+    mosaic_file = RUN_DIR / f"{PRODUCT.lower()}_2026_02_mosaic.tif"
+
+    subprocess.run(
+        [
+            gdalbuildvrt,
+            "-overwrite",
+            "-srcnodata", "-9999",
+            "-vrtnodata", "-9999",
+            str(vrt_file),
+            *[str(path) for path in tile_files],
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            gdal_translate,
+            "-of", "COG",
+            "-co", "COMPRESS=ZSTD",
+            "-co", "BIGTIFF=IF_SAFER",
+            str(vrt_file),
+            str(mosaic_file),
+        ],
+        check=True,
+    )
+
+    if not mosaic_file.is_file():
+        raise RuntimeError("Final mosaic COG was not created.")
+
+    print("\nFinal mosaic created:", mosaic_file)
+
+print("\nTILED PROCESSING FINISHED.")
