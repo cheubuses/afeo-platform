@@ -596,106 +596,129 @@ data = data.rio.clip(
 print("AOI polygon mask applied.")
 print("Raster dimensions:", data.sizes)
 print("Pixels outside AOI are set to NoData.")
-# ============================================================
+## ============================================================
 # 7B. CONVERT OPTICAL BANDS TO SURFACE REFLECTANCE
+#     Using each asset's raster:bands metadata
 # ============================================================
 
-REFLECTANCE_SCALE = 0.0001
 SOURCE_NODATA = 0
 
-print("\nSCENE-BY-SCENE OFFSET AUDIT")
+spectral_bands = [
+    "red", "green", "blue", "nir", "swir16", "swir22"
+]
+
+print("\nSTAC RADIOMETRIC METADATA AUDIT")
 print("=" * 75)
 
-offset_flags = set()
-
+# The BOA flag is printed for diagnostics only.
+# It is NOT used to decide whether the offset is applied.
 for item in items:
-    properties = item.properties
-    offset_flag = properties.get("earthsearch:boa_offset_applied")
-    baseline = properties.get("s2:processing_baseline")
-
-    offset_flags.add(offset_flag)
-
-    print(f"\nScene: {item.id}")
-    print("  Processing baseline:", baseline)
-    print("  BOA offset applied flag:", offset_flag)
-
-    for band_name in ["red", "green", "blue", "nir", "swir16", "swir22"]:
-        asset = item.assets.get(band_name)
-
-        if asset is None:
-            continue
-
-        raster_bands = asset.extra_fields.get("raster:bands") or []
-        band_metadata = raster_bands[0] if raster_bands else {}
-
-        print(
-            f"  {band_name}: "
-            f"scale={band_metadata.get('scale')}, "
-            f"offset={band_metadata.get('offset')}, "
-            f"nodata={band_metadata.get('nodata')}"
-        )
-
-print("\nDistinct BOA offset flags:", offset_flags)
-
-if len(offset_flags) != 1 or None in offset_flags:
-    raise RuntimeError(
-        "Scenes have missing or inconsistent BOA offset flags. "
-        "Do not composite them until the reflectance convention "
-        "has been verified."
+    print(
+        f"Scene: {item.id} | "
+        f"Baseline: {item.properties.get('s2:processing_baseline')} | "
+        f"BOA flag: "
+        f"{item.properties.get('earthsearch:boa_offset_applied')}"
     )
 
-boa_offset_already_applied = offset_flags.pop()
+print("\nAPPLYING ASSET SCALE AND OFFSET")
+print("=" * 75)
 
-print("\nREFLECTANCE SCALING CHECK")
-print("BOA offset already applied:", boa_offset_already_applied)
+for band_name in spectral_bands:
 
-for band_name in [
-    "red", "green", "blue", "nir", "swir16", "swir22"
-]:
-    # SWIR bands are optional and depend on the requested product.
+    # Some products do not load every spectral band.
     if band_name not in data.data_vars:
         continue
 
-    # Get the source band BEFORE using it.
+    source_parameters = []
+
+    # Check the metadata for every scene before transforming
+    # the corresponding time-series band.
+    for item in items:
+
+        asset = item.assets.get(band_name)
+
+        if asset is None:
+            raise RuntimeError(
+                f"Asset '{band_name}' is missing from scene "
+                f"{item.id}. Cannot verify radiometric scaling."
+            )
+
+        raster_bands = (
+            asset.extra_fields.get("raster:bands") or []
+        )
+
+        if not raster_bands:
+            raise RuntimeError(
+                f"Missing raster:bands metadata for "
+                f"{band_name} in scene {item.id}."
+            )
+
+        band_metadata = raster_bands[0]
+
+        scale = band_metadata.get("scale")
+        offset = band_metadata.get("offset", 0.0)
+        nodata = band_metadata.get("nodata")
+
+        if scale is None:
+            raise RuntimeError(
+                f"Missing scale for {band_name} "
+                f"in scene {item.id}."
+            )
+
+        if offset is None:
+            offset = 0.0
+
+        if nodata is None:
+            nodata = SOURCE_NODATA
+
+        source_parameters.append(
+            (float(scale), float(offset), float(nodata))
+        )
+
+    # Do not composite a band if the source scenes disagree
+    # about the required radiometric transformation.
+    distinct_parameters = set(source_parameters)
+
+    if len(distinct_parameters) != 1:
+        raise RuntimeError(
+            f"Inconsistent scale, offset or NoData metadata "
+            f"for band '{band_name}': {distinct_parameters}"
+        )
+
+    scale, offset, nodata = next(iter(distinct_parameters))
+
+    # These are the loaded source values, before our transformation.
     raw_band = data[band_name]
 
-    # Keep the original zero/NoData pixels and pixels outside the AOI
-    # out of reflectance calculations.
+    # Preserve NoData and pixels outside the AOI.
     valid_pixels = (
         raw_band.notnull()
-        & (raw_band != SOURCE_NODATA)
+        & (raw_band != nodata)
     )
 
-    # Apply the scale once. Apply the offset only when required by
-    # the verified convention of the source pixel values.
-    if boa_offset_already_applied:
-        reflectance = (
-            raw_band.astype("float32") * REFLECTANCE_SCALE
-        )
-        offset_used = 0.0
-    else:
-        reflectance = (
-            raw_band.astype("float32") * REFLECTANCE_SCALE - 0.1
-        )
-        offset_used = -0.1
+    # Apply the metadata-defined transformation exactly once.
+    reflectance = (
+        raw_band.astype("float32") * scale + offset
+    )
 
     data[band_name] = reflectance.where(valid_pixels)
 
     data[band_name].attrs.update({
         "units": "surface reflectance",
-        "scale_applied": REFLECTANCE_SCALE,
-        "offset_applied_in_pipeline": offset_used,
-        "earthsearch_boa_offset_already_applied":
-            boa_offset_already_applied,
-        "source_nodata": SOURCE_NODATA,
+        "scale_applied": scale,
+        "offset_applied_in_pipeline": offset,
+        "source_nodata": nodata,
+        "radiometric_transform": "DN * scale + offset",
     })
 
     print(
         f"{band_name.upper()}: "
-        f"scale={REFLECTANCE_SCALE}, "
-        f"additional offset={offset_used}"
+        f"scale={scale}, "
+        f"offset={offset}, "
+        f"NoData={nodata}"
     )
 
+print("\nRadiometric metadata checks passed.")
 
 # ============================================================
 # 8. SCL MASKING, VALIDATION AND TEMPORAL COMPOSITE
