@@ -599,7 +599,8 @@ print(
     f"{tiled_result['elapsed_seconds']:.2f} seconds"
 )
 print("==========================================")
-
+# Stop here: the old whole-AOI processing section below is obsolete.
+raise SystemExit(0)
 
 # ============================================================
 # 7A. MASK PIXELS OUTSIDE THE EXACT AOI POLYGON

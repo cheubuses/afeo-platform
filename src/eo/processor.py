@@ -1,6 +1,4 @@
-
-from eo.indices import calculate_ndvi
-from eo.composites import create_rgb, create_false_color
+"""Dispatch the requested EO product calculation."""
 
 from eo.indices import (
     calculate_ndvi,
@@ -12,20 +10,43 @@ from eo.indices import (
 from eo.composites import create_rgb, create_false_color
 
 
+# product -> (required bands, function taking the composite dataset)
+PRODUCTS = {
+    "RGB": (
+        ["red", "green", "blue"],
+        lambda d: create_rgb(d),
+    ),
+    "FALSE_COLOR": (
+        ["nir", "red", "green"],
+        lambda d: create_false_color(d),
+    ),
+    "NDVI": (
+        ["red", "nir"],
+        lambda d: calculate_ndvi(d["red"], d["nir"]),
+    ),
+    "NDWI": (
+        ["green", "nir"],
+        lambda d: calculate_ndwi(d["green"], d["nir"]),
+    ),
+    "NDMI": (
+        ["nir", "swir16"],
+        lambda d: calculate_ndmi(d["nir"], d["swir16"]),
+    ),
+    "NBR": (
+        ["nir", "swir22"],
+        lambda d: calculate_nbr(d["nir"], d["swir22"]),
+    ),
+    "NBR2": (
+        ["swir16", "swir22"],
+        lambda d: calculate_nbr2(d["swir16"], d["swir22"]),
+    ),
+}
+
+
 def process_data(data, process):
     """Run the requested EO product calculation."""
 
     process = str(process).strip().upper()
-
-    required_bands = {
-        "RGB": ["red", "green", "blue"],
-        "FALSE_COLOR": ["nir", "red", "green"],
-        "NDVI": ["red", "nir"],
-        "NDWI": ["green", "nir"],
-        "NDMI": ["nir", "swir16"],
-        "NBR": ["nir", "swir22"],
-        "NBR2": ["swir16", "swir22"],
-    }
 
     if process == "QUALITY_MASK":
         raise NotImplementedError(
@@ -33,13 +54,12 @@ def process_data(data, process):
             "and valid observation counts."
         )
 
-    if process not in required_bands:
+    if process not in PRODUCTS:
         raise ValueError(f"Unsupported process: {process}")
 
-    missing = [
-        band for band in required_bands[process]
-        if band not in data.data_vars
-    ]
+    required, calculate = PRODUCTS[process]
+
+    missing = [band for band in required if band not in data.data_vars]
 
     if missing:
         raise ValueError(
@@ -47,25 +67,4 @@ def process_data(data, process):
             "Check the Sentinel-2 loader and composite band selection."
         )
 
-    if process == "RGB":
-        result = create_rgb(data)
-
-    elif process == "FALSE_COLOR":
-        result = create_false_color(data)
-
-    elif process == "NDVI":
-        result = calculate_ndvi(data["red"], data["nir"])
-
-    elif process == "NDWI":
-        result = calculate_ndwi(data["green"], data["nir"])
-
-    elif process == "NDMI":
-        result = calculate_ndmi(data["nir"], data["swir16"])
-
-    elif process == "NBR":
-        result = calculate_nbr(data["nir"], data["swir22"])
-
-    elif process == "NBR2":
-        result = calculate_nbr2(data["swir16"], data["swir22"])
-
-    return result
+    return calculate(data)
