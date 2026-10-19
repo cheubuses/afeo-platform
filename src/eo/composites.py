@@ -1,37 +1,42 @@
-
 import xarray as xr
+
+
+def _stack_bands(data, bands, long_name, display_channels=None):
+    """Stack named bands into a labelled (band, y, x) DataArray."""
+
+    missing = [band for band in bands if band not in data.data_vars]
+
+    if missing:
+        raise ValueError(
+            f"Cannot build colour composite; missing bands: {missing}."
+        )
+
+    stack = data[bands].to_array(dim="band")
+    stack = stack.assign_coords(band=bands)
+
+    stack.attrs.update({"long_name": long_name})
+
+    if display_channels:
+        stack.attrs["display_channels"] = display_channels
+
+    return stack
+
 
 def create_rgb(data):
     """
     Create an RGB composite from Sentinel-2 data.
 
-    Uses:
     Red   = Sentinel-2 red band
     Green = Sentinel-2 green band
     Blue  = Sentinel-2 blue band
     """
 
-    rgb = data[
-        [
-            "red",
-            "green",
-            "blue"
-        ]
-    ]
-
-    rgb_stack = rgb.to_array(
-        dim="band"
+    return _stack_bands(
+        data,
+        ["red", "green", "blue"],
+        long_name="Sentinel-2 true-colour composite",
+        display_channels="red, green, blue",
     )
-
-    rgb_stack = rgb_stack.assign_coords(
-        band=[
-            "red",
-            "green",
-            "blue"
-        ]
-    )
-
-    return rgb_stack
 
 
 def create_false_color(data):
@@ -41,22 +46,18 @@ def create_false_color(data):
     Display channels are NIR (red), red (green), and green (blue).
     """
 
-    bands = ["nir", "red", "green"]
-    false_color = data[bands].to_array(dim="band")
-    false_color = false_color.assign_coords(band=bands)
-    false_color.attrs.update({
-        "long_name": "Sentinel-2 false-colour infrared composite",
-        "display_channels": "NIR, red, green",
-    })
-    return false_color
-
-
+    return _stack_bands(
+        data,
+        ["nir", "red", "green"],
+        long_name="Sentinel-2 false-colour infrared composite",
+        display_channels="NIR, red, green",
+    )
 
 
 def create_temporal_composite(data, method="median"):
     """
-    Create a monthly temporal composite using
-    either median or mean across the time dimension.
+    Create a temporal composite using either the median or the mean
+    across the time dimension. NaN (masked) observations are skipped.
     """
 
     method = method.strip().lower()
@@ -66,23 +67,24 @@ def create_temporal_composite(data, method="median"):
             "The input dataset must contain a time dimension."
         )
 
-    if method == "median":
-        composite = data.median(
-            dim="time",
-            skipna=True
+    if method not in {"median", "mean"}:
+        raise ValueError(
+            "Invalid composite method. Choose 'median' or 'mean'."
         )
 
-    elif method == "mean":
-        composite = data.mean(
-            dim="time",
-            skipna=True
-        )
+    if method == "median":
+        # A median needs the whole time axis in one chunk. Recent xarray
+        # does this itself, but older versions raise an error. Spatial
+        # chunks are left as they are. Only dask-backed data is rechunked.
+        if data.chunks:
+            data = data.chunk({"time": -1})
+
+        composite = data.median(dim="time", skipna=True, keep_attrs=True)
 
     else:
-        raise ValueError(
-            "Invalid composite method. "
-            "Choose 'median' or 'mean'."
-        )
+        composite = data.mean(dim="time", skipna=True, keep_attrs=True)
+
+    composite.attrs["temporal_composite_method"] = method
 
     return composite
 
@@ -141,21 +143,14 @@ def save_color_preview(
             f"Expected colour bands {expected}; found {labels}."
         )
 
-    # ------------------------------------------------------------
     # Reduce resolution for preview generation only.
     # The original composite and exported COG remain unchanged.
-    # ------------------------------------------------------------
-
     height = int(rgb.sizes["y"])
     width = int(rgb.sizes["x"])
 
     downsample_factor = max(
         1,
-        int(
-            np.ceil(
-                max(height, width) / max_preview_dimension
-            )
-        ),
+        int(np.ceil(max(height, width) / max_preview_dimension)),
     )
 
     rgb = rgb.sel(band=expected)
@@ -178,7 +173,9 @@ def save_color_preview(
     values = np.asarray(rgb.values, dtype=np.float32)
 
     if values.ndim != 3 or values.shape[0] != 3:
-        raise ValueError(f"Expected RGB data shaped (3, y, x); got {values.shape}.")
+        raise ValueError(
+            f"Expected RGB data shaped (3, y, x); got {values.shape}."
+        )
 
     valid = np.isfinite(values).all(axis=0)
 

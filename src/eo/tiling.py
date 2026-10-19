@@ -1,43 +1,71 @@
 """Spatial tiling helpers for large-area Sentinel-2 processing."""
 
+from collections import Counter
 from math import ceil, floor
 
 from pyproj import CRS, Transformer
 from shapely.geometry import box
+from shapely.ops import clip_by_rect
 from shapely.ops import transform as transform_geometry
+from shapely.prepared import prep
+
+try:  # Shapely >= 2.0
+    from shapely import segmentize
+except ImportError:  # pragma: no cover
+    segmentize = None
+
+
+# Tile edges must fall on both the 10 m and 20 m Sentinel-2 pixel grids.
+PIXEL_GRID_M = 20
+
+
+def _item_crs(item):
+    """Return the projected CRS advertised by one STAC item, or None."""
+
+    candidates = [
+        item.properties.get("proj:epsg"),
+        item.properties.get("proj:code"),
+    ]
+
+    for asset in item.assets.values():
+        candidates.extend([
+            asset.extra_fields.get("proj:epsg"),
+            asset.extra_fields.get("proj:code"),
+        ])
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+
+        try:
+            return CRS.from_user_input(candidate).to_string()
+        except (ValueError, TypeError):
+            continue
+
+    return None
 
 
 def choose_target_crs(items, aoi_shape):
     """
     Choose one projected CRS for every tile.
 
-    Prefer the CRS advertised by the input STAC assets.
-    If projection metadata is absent, estimate a UTM CRS
-    from a representative point inside the AOI.
+    Uses the CRS shared by most input scenes, so one scene at the edge of a
+    large AOI cannot decide the projection. If no projection metadata is
+    present, estimate a UTM CRS from a point inside the AOI.
 
     aoi_shape must be a Shapely geometry in EPSG:4326.
     """
+
+    counts = Counter()
+
     for item in items:
-        candidates = [
-            item.properties.get("proj:epsg"),
-            item.properties.get("proj:code"),
-        ]
+        crs_string = _item_crs(item)
+        if crs_string:
+            counts[crs_string] += 1
 
-        # Asset-level projection metadata can also be present.
-        for asset in item.assets.values():
-            candidates.extend([
-                asset.extra_fields.get("proj:epsg"),
-                asset.extra_fields.get("proj:code"),
-            ])
-
-        for candidate in candidates:
-            if candidate is None:
-                continue
-
-            try:
-                return CRS.from_user_input(candidate).to_string()
-            except (ValueError, TypeError):
-                continue
+    if counts:
+        # Ties resolve to the CRS seen first.
+        return counts.most_common(1)[0][0]
 
     point = aoi_shape.representative_point()
     longitude = point.x
@@ -50,10 +78,7 @@ def choose_target_crs(items, aoi_shape):
             "Specify an appropriate projected target CRS."
         )
 
-    zone = max(
-        1,
-        min(60, int((longitude + 180) // 6) + 1),
-    )
+    zone = max(1, min(60, int((longitude + 180) // 6) + 1))
 
     epsg_code = (32600 if latitude >= 0 else 32700) + zone
     return f"EPSG:{epsg_code}"
@@ -63,6 +88,8 @@ def build_aoi_tiles(
     aoi_shape,
     tile_size_m=5000,
     target_crs="EPSG:32636",
+    min_area_m2=400.0,
+    max_segment_degrees=0.02,
 ):
     """
     Split a WGS84 AOI into aligned square tiles.
@@ -71,31 +98,51 @@ def build_aoi_tiles(
       tile_id: unique tile label
       bounds: projected xmin, ymin, xmax, ymax
       aoi_geometry_wgs84: exact AOI intersection for clipping
+
+    min_area_m2: tiles whose AOI overlap is smaller than this are skipped
+        (the default is one 20 m pixel).
+    max_segment_degrees: long AOI edges are subdivided before projection so
+        straight lat/lon edges stay accurate in the target CRS.
     """
+
     if aoi_shape is None or aoi_shape.is_empty:
         raise ValueError("AOI geometry is empty.")
 
     if not aoi_shape.is_valid:
         raise ValueError("AOI geometry is invalid.")
 
-    if tile_size_m <= 0:
-        raise ValueError("Tile size must be greater than zero.")
+    if tile_size_m != int(tile_size_m) or tile_size_m <= 0:
+        raise ValueError("Tile size must be a positive whole number of metres.")
+
+    tile_size_m = int(tile_size_m)
+
+    if tile_size_m % PIXEL_GRID_M != 0:
+        raise ValueError(
+            f"Tile size must be a multiple of {PIXEL_GRID_M} m so tile edges "
+            "stay on the Sentinel-2 pixel grid."
+        )
 
     target_crs = CRS.from_user_input(target_crs).to_string()
 
     to_projected = Transformer.from_crs(
-        "EPSG:4326",
-        target_crs,
-        always_xy=True,
+        "EPSG:4326", target_crs, always_xy=True
     ).transform
 
     to_wgs84 = Transformer.from_crs(
-        target_crs,
-        "EPSG:4326",
-        always_xy=True,
+        target_crs, "EPSG:4326", always_xy=True
     ).transform
 
-    aoi_projected = transform_geometry(to_projected, aoi_shape)
+    source_shape = aoi_shape
+
+    if segmentize is not None and max_segment_degrees:
+        source_shape = segmentize(aoi_shape, max_segment_degrees)
+
+    aoi_projected = transform_geometry(to_projected, source_shape)
+
+    if not aoi_projected.is_valid:
+        aoi_projected = aoi_projected.buffer(0)
+
+    prepared = prep(aoi_projected)
 
     min_x, min_y, max_x, max_y = aoi_projected.bounds
 
@@ -107,25 +154,32 @@ def build_aoi_tiles(
 
     tiles = []
 
-    for row, y_min in enumerate(
-        range(y_start, y_stop, tile_size_m)
-    ):
-        for col, x_min in enumerate(
-            range(x_start, x_stop, tile_size_m)
-        ):
+    for row, y_min in enumerate(range(y_start, y_stop, tile_size_m)):
+        for col, x_min in enumerate(range(x_start, x_stop, tile_size_m)):
             x_max = x_min + tile_size_m
             y_max = y_min + tile_size_m
 
             tile_box = box(x_min, y_min, x_max, y_max)
-            clipped_geometry = aoi_projected.intersection(tile_box)
 
-            if clipped_geometry.is_empty or clipped_geometry.area == 0:
+            # Cheap rejection and cheap acceptance before any overlay.
+            if not prepared.intersects(tile_box):
                 continue
 
-            tile_aoi_wgs84 = transform_geometry(
-                to_wgs84,
-                clipped_geometry,
-            )
+            if prepared.contains(tile_box):
+                clipped_geometry = tile_box
+            else:
+                clipped_geometry = clip_by_rect(
+                    aoi_projected, x_min, y_min, x_max, y_max
+                )
+
+                if not clipped_geometry.is_valid:
+                    clipped_geometry = clipped_geometry.buffer(0)
+
+            if (
+                clipped_geometry.is_empty
+                or clipped_geometry.area < min_area_m2
+            ):
+                continue
 
             tiles.append({
                 "tile_id": f"r{row:04d}_c{col:04d}",
@@ -135,7 +189,9 @@ def build_aoi_tiles(
                     float(x_max),
                     float(y_max),
                 ),
-                "aoi_geometry_wgs84": tile_aoi_wgs84,
+                "aoi_geometry_wgs84": transform_geometry(
+                    to_wgs84, clipped_geometry
+                ),
             })
 
     return tiles
