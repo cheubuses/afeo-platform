@@ -1,0 +1,82 @@
+"""FastAPI interface for the EO processing pipeline."""
+
+import sys
+from datetime import date
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+from eo.pipeline import run_eo_pipeline
+
+
+app = FastAPI(
+    title="AFROSAT EO Processing API",
+    version="1.0.0",
+    description="Programmatic Sentinel-2 processing for AFROSAT.",
+)
+
+
+class EOProcessRequest(BaseModel):
+    """Validated request body for EO processing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    aoi: dict[str, Any] = Field(
+        ...,
+        description="GeoJSON Polygon or MultiPolygon geometry in WGS84.",
+    )
+    start_date: date
+    end_date: date
+    process: str = "NDVI"
+    composite_method: Literal["median", "mean"] = "median"
+    cloud_cover_threshold: float = Field(default=20, ge=0, le=100)
+    tile_size_m: int = Field(default=5000, gt=0)
+    max_workers: int = Field(default=1, ge=1, le=8)
+    input_parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/health")
+def health():
+    """Lightweight API health check; does not access satellite data."""
+    return {"status": "ok", "service": "afrosat-eo"}
+
+
+@app.post("/process")
+async def process(request: EOProcessRequest):
+    """Submit an AOI for synchronous EO processing."""
+
+    if request.start_date > request.end_date:
+        raise HTTPException(
+            status_code=422,
+            detail="start_date must be on or before end_date.",
+        )
+
+    try:
+        result = await run_in_threadpool(
+            run_eo_pipeline,
+            aoi_geometry=request.aoi,
+            start_date=request.start_date.isoformat(),
+            end_date=request.end_date.isoformat(),
+            process=request.process,
+            composite_method=request.composite_method,
+            cloud_cover_threshold=request.cloud_cover_threshold,
+            tile_size_m=request.tile_size_m,
+            max_workers=request.max_workers,
+            input_parameters=request.input_parameters,
+        )
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

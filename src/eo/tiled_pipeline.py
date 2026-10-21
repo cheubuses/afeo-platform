@@ -29,6 +29,7 @@ import dask
 import numpy as np
 import pystac
 import rasterio
+import rioxarray
 from odc.stac import configure_s3_access
 from rio_cogeo.cogeo import cog_validate
 from shapely.geometry import shape
@@ -242,15 +243,43 @@ def _run_tile(task, items):
     if result.rio.crs is None:
         result = result.rio.write_crs(target_crs)
 
+    print(f"\n[{tile_id}] CLIPPING DIAGNOSTICS")
+    print("  Dimensions:", result.dims)
+    print("  Shape:", result.shape)
+    print("  CRS:", result.rio.crs)
+    print("  Bounds:", result.rio.bounds())
+    print(
+        "  Valid pixels before clip:",
+        int(np.isfinite(result.values).sum()),
+    )
+
+    clip_geometry = tile["aoi_geometry_wgs84"]
+
+    print("  AOI geometry type:", clip_geometry.geom_type)
+    print("  AOI geometry bounds:", clip_geometry.bounds)
+
     result = result.rio.clip(
-        [tile["aoi_geometry_wgs84"].__geo_interface__],
+        [clip_geometry.__geo_interface__],
         crs="EPSG:4326",
         drop=False,
         all_touched=False,
     )
 
+    print(
+        "  Valid pixels after clip:",
+        int(np.isfinite(result.values).sum()),
+    )
+
     export_started = time.perf_counter()
     _atomic_export_cog(result, tile_file)
+
+    with rasterio.open(tile_file) as check:
+        saved = check.read(1, masked=True)
+        print(
+            "  Valid pixels after export:",
+            int((~np.ma.getmaskarray(saved)).sum()),
+        )
+
     export_seconds = time.perf_counter() - export_started
 
     wrote_count = False
