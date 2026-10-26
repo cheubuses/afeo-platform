@@ -30,11 +30,18 @@ import numpy as np
 import pystac
 import rasterio
 import rioxarray
+from rasterio.features import geometry_mask
+from pyproj import Transformer
+from shapely.ops import transform as transform_geometry
 from odc.stac import configure_s3_access
 from rio_cogeo.cogeo import cog_validate
 from shapely.geometry import shape
 
-from eo.tiling import build_aoi_tiles, choose_target_crs
+from eo.tiling import (
+    build_aoi_tiles,
+    build_single_aoi_window,
+    choose_target_crs,
+)
 from eo.sentinel2 import load_sentinel2_items
 from eo.masking import (
     mask_with_scl,
@@ -61,6 +68,41 @@ OUTPUT_NAMES = {
 SPECTRAL_BANDS = ["red", "green", "blue", "nir", "swir16", "swir22"]
 
 COUNT_NODATA = 65535
+
+
+def _mask_array_to_aoi(array, aoi_geometry):
+    """Mask pixels outside an AOI using the array's own raster grid."""
+
+    if array.rio.crs is None:
+        raise ValueError("Cannot mask AOI: raster CRS is missing.")
+
+    height = array.rio.height
+    width = array.rio.width
+    transform = array.rio.transform()
+    raster_crs = array.rio.crs
+
+    to_raster_crs = Transformer.from_crs(
+        "EPSG:4326",
+        raster_crs,
+        always_xy=True,
+    ).transform
+
+    projected_geometry = transform_geometry(
+        to_raster_crs,
+        aoi_geometry,
+    )
+
+    inside = geometry_mask(
+        [projected_geometry.__geo_interface__],
+        out_shape=(height, width),
+        transform=transform,
+        all_touched=False,
+        invert=True,
+    )
+
+    # Xarray applies the 2D mask to the matching 2D raster grid.
+    return array.where(inside)
+
 
 # GDAL settings that make thousands of public-S3 reads more robust.
 GDAL_ENV = {
@@ -154,11 +196,9 @@ def _write_count_raster(count, aoi_geometry, target_crs, final_path):
     if count.rio.crs is None:
         count = count.rio.write_crs(target_crs)
 
-    count = count.astype("float32").rio.clip(
-        [aoi_geometry.__geo_interface__],
-        crs="EPSG:4326",
-        drop=False,
-        all_touched=False,
+    count = _mask_array_to_aoi(
+        count.astype("float32"),
+        aoi_geometry,
     )
 
     count = (
@@ -243,43 +283,11 @@ def _run_tile(task, items):
     if result.rio.crs is None:
         result = result.rio.write_crs(target_crs)
 
-    print(f"\n[{tile_id}] CLIPPING DIAGNOSTICS")
-    print("  Dimensions:", result.dims)
-    print("  Shape:", result.shape)
-    print("  CRS:", result.rio.crs)
-    print("  Bounds:", result.rio.bounds())
-    print(
-        "  Valid pixels before clip:",
-        int(np.isfinite(result.values).sum()),
-    )
-
     clip_geometry = tile["aoi_geometry_wgs84"]
-
-    print("  AOI geometry type:", clip_geometry.geom_type)
-    print("  AOI geometry bounds:", clip_geometry.bounds)
-
-    result = result.rio.clip(
-        [clip_geometry.__geo_interface__],
-        crs="EPSG:4326",
-        drop=False,
-        all_touched=False,
-    )
-
-    print(
-        "  Valid pixels after clip:",
-        int(np.isfinite(result.values).sum()),
-    )
+    result = _mask_array_to_aoi(result, clip_geometry)
 
     export_started = time.perf_counter()
     _atomic_export_cog(result, tile_file)
-
-    with rasterio.open(tile_file) as check:
-        saved = check.read(1, masked=True)
-        print(
-            "  Valid pixels after export:",
-            int((~np.ma.getmaskarray(saved)).sum()),
-        )
-
     export_seconds = time.perf_counter() - export_started
 
     wrote_count = False
@@ -361,11 +369,14 @@ def _process_one_tile(task):
 
 def _run_key(*, process, items, start_date, end_date, composite_method,
              cloud_cover_threshold, tile_size_m, target_crs, aoi_shape,
-             scl_classes):
+             scl_classes, processing_mode, max_window_size_m):
     """Stable hash so re-running identical inputs resumes the same folder."""
     payload = json.dumps(
         {
             "process": process,
+            "clip_version": 3,
+            "processing_mode": processing_mode,
+            "max_window_size_m": max_window_size_m,
             "scenes": sorted(item.id for item in items),
             "start": str(start_date),
             "end": str(end_date),
@@ -441,13 +452,15 @@ def process_tiled_aoi(
     project_root,
     input_parameters,
     tile_size_m=5000,
-    max_workers=1,
+    processing_mode="auto",
+    max_window_size_m=10000,
+    max_workers=2,
     tile_retries=3,
     write_valid_count=True,
     keep_tiles=True,
     scl_retained_classes=None,
 ):
-    """Process a large AOI tile by tile and mosaic the result into a COG."""
+    """Process an AOI using one window or multiple spatial tiles."""
 
     process = str(process).strip().upper()
     composite_method = str(composite_method).strip().lower()
@@ -482,14 +495,48 @@ def process_tiled_aoi(
 
     target_crs = choose_target_crs(items, aoi_shape)
 
-    tiles = build_aoi_tiles(
-        aoi_shape,
-        tile_size_m=tile_size_m,
-        target_crs=target_crs,
-    )
+    requested_mode = str(processing_mode).strip().lower()
+    if requested_mode not in {"auto", "single_window", "tiled"}:
+        raise ValueError(
+            "processing_mode must be 'auto', 'single_window', or 'tiled'."
+        )
+
+    if (
+        isinstance(max_window_size_m, bool)
+        or not isinstance(max_window_size_m, (int, float))
+        or max_window_size_m <= 0
+    ):
+        raise ValueError("max_window_size_m must be a positive number.")
+
+    max_window_size_m = float(max_window_size_m)
+
+    window_tiles = []
+    if requested_mode in {"auto", "single_window"}:
+        window_tiles = build_single_aoi_window(
+            aoi_shape,
+            target_crs=target_crs,
+            max_window_size_m=max_window_size_m,
+        )
+
+    if window_tiles:
+        tiles = window_tiles
+        actual_mode = "single_window"
+    elif requested_mode == "single_window":
+        raise ValueError(
+            "AOI exceeds max_window_size_m in at least one dimension. "
+            "Increase max_window_size_m or use processing_mode='auto' "
+            "or 'tiled'."
+        )
+    else:
+        tiles = build_aoi_tiles(
+            aoi_shape,
+            tile_size_m=tile_size_m,
+            target_crs=target_crs,
+        )
+        actual_mode = "spatially_tiled"
 
     if not tiles:
-        raise RuntimeError("No spatial tiles intersect the AOI.")
+        raise RuntimeError("No processing windows intersect the AOI.")
 
     # Deterministic folder -> resumable.
     run_key = _run_key(
@@ -503,6 +550,8 @@ def process_tiled_aoi(
         target_crs=target_crs,
         aoi_shape=aoi_shape,
         scl_classes=scl_classes,
+        processing_mode=actual_mode,
+        max_window_size_m=max_window_size_m,
     )
 
     run_dir = output_dir / "tiles" / f"{process.lower()}_{run_key}"
@@ -553,12 +602,19 @@ def process_tiled_aoi(
     if not tasks:
         raise RuntimeError("No scenes intersect any tile of the AOI.")
 
-    print("\nTILED PROCESSING")
-    print("================")
+    # Avoid starting more worker processes than there are tasks.
+    max_workers = min(max(1, int(max_workers)), len(tasks))
+
+    print("\nAOI PROCESSING")
+    print("==============")
     print("Product:", process)
     print("Target CRS:", target_crs)
-    print("Tile size:", tile_size_m, "metres")
-    print("Tiles with data:", len(tasks), "of", len(tiles))
+    print("Processing mode:", actual_mode)
+    if actual_mode == "single_window":
+        print("Window limit:", max_window_size_m, "metres per dimension")
+    else:
+        print("Tile size:", tile_size_m, "metres")
+    print("Windows with data:", len(tasks), "of", len(tiles))
     print("Scenes:", len(items))
     print("Workers:", max_workers)
     print("Run folder:", run_dir)
@@ -570,7 +626,10 @@ def process_tiled_aoi(
         "composite_method": composite_method,
         "cloud_cover_threshold_percent": float(cloud_cover_threshold),
         "target_crs": str(target_crs),
+        "processing_mode": actual_mode,
+        "max_window_size_m": max_window_size_m,
         "tile_size_m": tile_size_m,
+        "workers": max_workers,
         "scene_ids": [item.id for item in items],
         "run_key": run_key,
     }
@@ -712,7 +771,7 @@ def process_tiled_aoi(
     mask_stats = {
         "method": "Sentinel-2 SCL",
         "applied_before_temporal_composite": True,
-        "scope": "each spatial tile",
+        "scope": "each processing window",
         "retained_scl_classes": list(scl_classes),
         "excluded_scl_classes": excluded_classes_for(scl_classes),
         "per_observation_counts_computed": False,
@@ -722,7 +781,7 @@ def process_tiled_aoi(
     }
 
     masking_comparison = {
-        "processing_mode": "spatially_tiled",
+        "processing_mode": actual_mode,
         "tile_count": len(tasks),
         "tile_size_m": tile_size_m,
         "before_after_rgb_previews_generated": False,
@@ -750,7 +809,7 @@ def process_tiled_aoi(
 
     elapsed = time.perf_counter() - overall_started
 
-    metadata["processing"]["mode"] = "spatially_tiled"
+    metadata["processing"]["mode"] = actual_mode
     metadata["processing"]["tile_size_m"] = tile_size_m
     metadata["processing"]["tile_count"] = len(tasks)
     metadata["processing"]["tile_manifest"] = str(manifest_file)
@@ -761,8 +820,18 @@ def process_tiled_aoi(
 
     _write_manifest(manifest_file, header, records, "completed")
 
+
     if not keep_tiles:
-        shutil.rmtree(run_dir, ignore_errors=True)
+        # Remove intermediate tile files but preserve the final manifest.
+        for path in run_dir.iterdir():
+            if path == manifest_file:
+                continue
+
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+
 
     print("\nTILED PROCESSING COMPLETED")
     print("Product:", process)
@@ -775,5 +844,6 @@ def process_tiled_aoi(
         "manifest_file": manifest_file,
         "valid_count_file": valid_count_file,
         "tile_count": len(tasks),
+        "processing_mode": actual_mode,
         "elapsed_seconds": elapsed,
     }

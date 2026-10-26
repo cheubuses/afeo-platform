@@ -1,6 +1,7 @@
 """Reusable multi-product entry point for the EO processing pipeline."""
 
 from datetime import date
+import json
 from math import isfinite
 from pathlib import Path
 from uuid import uuid4
@@ -123,7 +124,9 @@ def run_processing(
     composite_method="median",
     output_dir=None,
     tile_size_m=5000,
-    max_workers=1,
+    processing_mode="auto",
+    max_window_size_m=10000,
+    max_workers=2,
     tile_retries=3,
     write_valid_count=True,
     keep_tiles=True,
@@ -185,6 +188,22 @@ def run_processing(
             "products": {},
         }
 
+    # One readable folder for this complete request.
+    output_root = (
+        Path(output_dir)
+        if output_dir is not None
+        else Path(__file__).resolve().parents[2] / "outputs"
+    )
+    short_id = request_id[:8]
+    request_folder_name = (
+        f"{start.replace('-', '')}_{end.replace('-', '')}"
+        f"_request-{short_id}"
+    )
+    request_output_dir = output_root / request_folder_name
+    request_output_dir.mkdir(parents=True, exist_ok=False)
+
+    request_metadata_path = request_output_dir / "request_metadata.json"
+
     product_results = {}
     errors = []
 
@@ -223,8 +242,11 @@ def run_processing(
                 process=product,
                 composite_method=method,
                 cloud_cover_threshold=cloud_limit,
-                output_dir=output_dir,
+                output_dir=request_output_dir / product,
+                create_run_directory=False,
                 tile_size_m=tile_size_m,
+                processing_mode=processing_mode,
+                max_window_size_m=max_window_size_m,
                 max_workers=max_workers,
                 tile_retries=tile_retries,
                 write_valid_count=write_valid_count,
@@ -310,9 +332,11 @@ def run_processing(
         if item["status"] == "completed"
     ]
 
-    return {
+    response = {
         "status": overall_status,
         "request_id": request_id,
+        "request_output_dir": str(request_output_dir),
+        "request_metadata_path": str(request_metadata_path),
         "start_date": start,
         "end_date": end,
         "max_cloud_cover": cloud_limit,
@@ -325,3 +349,27 @@ def run_processing(
         "products": product_results,
         "errors": errors,
     }
+
+    request_metadata = {
+        "request_id": request_id,
+        "status": overall_status,
+        "start_date": start,
+        "end_date": end,
+        "max_cloud_cover": cloud_limit,
+        "composite_method": method,
+        "aoi_type": geometry.geom_type,
+        "aoi_bounds_wgs84": list(geometry.bounds),
+        "requested_products": normalized_products,
+        "completed_products": completed_count,
+        "failed_products": failed_count,
+        "scene_count": max(scene_counts, default=0),
+        "products": product_results,
+        "errors": errors,
+    }
+
+    request_metadata_path.write_text(
+        json.dumps(request_metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    return response

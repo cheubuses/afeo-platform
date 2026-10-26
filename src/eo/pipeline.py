@@ -28,13 +28,16 @@ def run_eo_pipeline(
     output_dir=None,
     input_parameters=None,
     tile_size_m=5000,
-    max_workers=1,
+    processing_mode="auto",
+    max_window_size_m=10000,
+    max_workers=2,
     tile_retries=3,
     write_valid_count=True,
     keep_tiles=False,
     scl_retained_classes=None,
     shared_items=None,
     shared_reference_item=None,
+    create_run_directory=True,
 ):
     """Run the EO pipeline without interactive prompts.
 
@@ -112,11 +115,17 @@ def run_eo_pipeline(
             "AOI geometry is invalid. Repair it before processing."
         )
 
-    # Each run gets its own directory, avoiding collisions between requests.
+    # Standalone runs retain their UUID folder. Multi-product requests
+    # can supply a product-specific folder inside a shared request folder.
     root = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     run_id = uuid4().hex
-    run_output_dir = root / run_id
-    run_output_dir.mkdir(parents=True, exist_ok=False)
+
+    if create_run_directory:
+        run_output_dir = root / run_id
+        run_output_dir.mkdir(parents=True, exist_ok=False)
+    else:
+        run_output_dir = root
+        run_output_dir.mkdir(parents=True, exist_ok=True)
 
     parameters = dict(input_parameters or {})
     parameters.update(
@@ -172,6 +181,8 @@ def run_eo_pipeline(
         project_root=PROJECT_ROOT,
         input_parameters=parameters,
         tile_size_m=tile_size_m,
+        processing_mode=processing_mode,
+        max_window_size_m=max_window_size_m,
         max_workers=max_workers,
         tile_retries=tile_retries,
         write_valid_count=write_valid_count,
@@ -209,6 +220,7 @@ def run_eo_pipeline(
             if result.get("valid_count_file") is not None
             else None
         ),
+        "processing_mode": result.get("processing_mode", processing_mode),
         "tile_count": int(result["tile_count"]),
         "elapsed_seconds": float(result["elapsed_seconds"]),
     }
