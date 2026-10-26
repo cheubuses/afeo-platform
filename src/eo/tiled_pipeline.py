@@ -747,11 +747,12 @@ def process_tiled_aoi(
     valid_count_file = None
 
     if count_files:
-        valid_count_file = output_dir / "valid_observation_count.tif"
+        candidate_count_file = output_dir / "valid_observation_count.tif"
+
         _mosaic(
             count_files,
             run_dir / "validcount_mosaic.vrt",
-            valid_count_file,
+            candidate_count_file,
             nodata_arg=str(COUNT_NODATA),
             cog_options=[
                 "-co", "COMPRESS=DEFLATE",
@@ -764,6 +765,43 @@ def process_tiled_aoi(
             gdal_translate=gdal_translate,
         )
 
+        # Mark the count raster as available only after validating it.
+        if not candidate_count_file.is_file():
+            raise RuntimeError(
+                "Count raster mosaic was not created: "
+                f"{candidate_count_file}"
+            )
+
+        with rasterio.open(candidate_count_file) as src:
+            if src.count != 1:
+                raise RuntimeError(
+                    "Count raster must have exactly one band; "
+                    f"found {src.count}."
+                )
+
+            if src.nodata != COUNT_NODATA:
+                raise RuntimeError(
+                    "Count raster has unexpected NoData value: "
+                    f"{src.nodata}; expected {COUNT_NODATA}."
+                )
+
+            valid_pixels = 0
+            positive_pixels = 0
+
+            for _, window in src.block_windows(1):
+                values = src.read(1, window=window, masked=True)
+                data = values.compressed()
+                valid_pixels += data.size
+                positive_pixels += int(np.count_nonzero(data > 0))
+
+            if valid_pixels == 0 or positive_pixels == 0:
+                raise RuntimeError(
+                    "Count raster contains no positive valid observations."
+                )
+
+        valid_count_file = candidate_count_file
+    
+
     # --------------------------------------------------------
     # Metadata
     # --------------------------------------------------------
@@ -774,7 +812,7 @@ def process_tiled_aoi(
         "scope": "each processing window",
         "retained_scl_classes": list(scl_classes),
         "excluded_scl_classes": excluded_classes_for(scl_classes),
-        "per_observation_counts_computed": False,
+        "per_observation_counts_computed": valid_count_file is not None,
         "valid_observation_count_raster": (
             str(valid_count_file) if valid_count_file else None
         ),
