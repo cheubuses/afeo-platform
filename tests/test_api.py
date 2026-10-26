@@ -278,8 +278,71 @@ def test_processing_errors_are_classified(
         assert result["errors"][0]["resumable"] is True
         assert result["errors"][0]["run_dir"] == "/tmp/test-run"
         assert (
-            
+
             result["errors"][0]["manifest_path"]
             == "/tmp/test-run/tile_manifest.json"
         )
-            
+
+
+def test_multi_product_request_creates_labelled_folders_and_metadata(
+    valid_request, monkeypatch, tmp_path
+):
+    """A request groups products under one dated request folder."""
+    pipeline_calls = []
+
+    def fake_pipeline(**kwargs):
+        product_dir = kwargs["output_dir"]
+        product_dir.mkdir(parents=True, exist_ok=True)
+        pipeline_calls.append(kwargs)
+
+        return {
+            "status": "completed",
+            "run_id": f"run-{kwargs['process'].lower()}",
+            "process": kwargs["process"],
+            "scene_count": 1,
+            "product_path": str(
+                product_dir / f"{kwargs['process'].lower()}.tif"
+            ),
+            "metadata_path": str(product_dir / "metadata.json"),
+        }
+
+    monkeypatch.setattr(api, "run_eo_pipeline", fake_pipeline)
+
+    request = {
+        **valid_request,
+        "products": ["NDVI", "RGB"],
+        "output_dir": tmp_path,
+    }
+
+    result = run_processing(**request)
+
+    assert result["status"] == "completed"
+
+    request_dir = tmp_path / result["request_output_dir"].split("/")[-1]
+
+    assert request_dir.is_dir()
+    assert request_dir.name.startswith("20260201_20260228_request-")
+    assert len(request_dir.name.rsplit("request-", 1)[1]) == 8
+
+    # Both products use the same request folder, with their own subfolders.
+    assert (request_dir / "NDVI").is_dir()
+    assert (request_dir / "RGB").is_dir()
+    assert len(pipeline_calls) == 2
+
+    for call in pipeline_calls:
+        assert call["create_run_directory"] is False
+        assert call["output_dir"] == request_dir / call["process"]
+
+    # Request metadata exists and records the product results.
+    metadata_path = request_dir / "request_metadata.json"
+    assert metadata_path.is_file()
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["request_id"] == result["request_id"]
+    assert metadata["requested_products"] == ["NDVI", "RGB"]
+    assert metadata["status"] == "completed"
+    assert set(metadata["products"]) == {"NDVI", "RGB"}
+
+    # The API response exposes the request folder and metadata path.
+    assert result["request_output_dir"] == str(request_dir)
+    assert result["request_metadata_path"] == str(metadata_path)

@@ -195,3 +195,71 @@ def build_aoi_tiles(
             })
 
     return tiles
+
+def build_single_aoi_window(
+    aoi_shape,
+    target_crs="EPSG:32636",
+    pixel_size_m=PIXEL_GRID_M,
+    max_window_size_m=10000,
+    max_segment_degrees=0.02,
+):
+    """Build one pixel-aligned window for a small WGS84 AOI.
+
+    Returns one tile record, or an empty list when the AOI is too large
+    for the configured maximum window dimensions.
+    """
+    if aoi_shape is None or aoi_shape.is_empty:
+        raise ValueError("AOI geometry is empty.")
+
+    if not aoi_shape.is_valid:
+        raise ValueError("AOI geometry is invalid.")
+
+    if pixel_size_m <= 0 or pixel_size_m % PIXEL_GRID_M != 0:
+        raise ValueError(
+            f"Pixel size must be a positive multiple of {PIXEL_GRID_M} m."
+        )
+
+    if max_window_size_m <= 0:
+        raise ValueError("Maximum window size must be positive.")
+
+    target_crs = CRS.from_user_input(target_crs).to_string()
+
+    to_projected = Transformer.from_crs(
+        "EPSG:4326", target_crs, always_xy=True
+    ).transform
+
+    source_shape = aoi_shape
+    if segmentize is not None and max_segment_degrees:
+        source_shape = segmentize(aoi_shape, max_segment_degrees)
+
+    projected = transform_geometry(to_projected, source_shape)
+    if not projected.is_valid:
+        projected = projected.buffer(0)
+
+    min_x, min_y, max_x, max_y = projected.bounds
+
+    x_min = floor(min_x / pixel_size_m) * pixel_size_m
+    y_min = floor(min_y / pixel_size_m) * pixel_size_m
+    x_max = ceil(max_x / pixel_size_m) * pixel_size_m
+    y_max = ceil(max_y / pixel_size_m) * pixel_size_m
+
+    width = x_max - x_min
+    height = y_max - y_min
+
+    if width <= 0 or height <= 0:
+        raise ValueError("AOI produces an empty processing window.")
+
+    if width > max_window_size_m or height > max_window_size_m:
+        return []
+
+    return [{
+        "tile_id": "window",
+        "bounds": (
+            float(x_min),
+            float(y_min),
+            float(x_max),
+            float(y_max),
+        ),
+        # Keep the exact input geometry for final raster masking.
+        "aoi_geometry_wgs84": aoi_shape,
+    }]
