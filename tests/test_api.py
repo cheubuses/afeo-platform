@@ -1,7 +1,7 @@
-
 """Tests for the EO processing API."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -257,9 +257,20 @@ def test_result_is_json_serializable(valid_request, monkeypatch):
     ],
 )
 def test_processing_errors_are_classified(
-    valid_request, monkeypatch, message, expected_code
+    valid_request, monkeypatch, message, expected_code, tmp_path
 ):
     """Known processing failures should receive the correct error code."""
+
+    expected_run_dir = None
+    expected_manifest = None
+
+    if expected_code == "TILE_PROCESSING_FAILED":
+        expected_run_dir = tmp_path / "test-run"
+        expected_manifest = expected_run_dir / "tile_manifest.json"
+        message = (
+            "1 tile(s) failed. Completed tiles are kept in "
+            f"{expected_run_dir}"
+        )
 
     def failing_pipeline(**kwargs):
         raise RuntimeError(message)
@@ -276,11 +287,10 @@ def test_processing_errors_are_classified(
 
     if expected_code == "TILE_PROCESSING_FAILED":
         assert result["errors"][0]["resumable"] is True
-        assert result["errors"][0]["run_dir"] == "/tmp/test-run"
+        assert Path(result["errors"][0]["run_dir"]) == expected_run_dir
         assert (
-
-            result["errors"][0]["manifest_path"]
-            == "/tmp/test-run/tile_manifest.json"
+            Path(result["errors"][0]["manifest_path"])
+            == expected_manifest
         )
 
 
