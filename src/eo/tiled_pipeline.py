@@ -393,14 +393,49 @@ def _run_key(*, process, items, start_date, end_date, composite_method,
     return hashlib.sha1(payload.encode()).hexdigest()[:10]
 
 
-def _write_manifest(path, header, records, status):
+
+def _portable_path(path, project_root):
+    """Return a project-relative POSIX path without exposing local paths."""
+    if path is None:
+        return None
+
+    path = Path(path)
+    root = Path(project_root)
+
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        # Match the fallback used by metadata file records.
+        return path.name
+
+
+def _write_manifest(path, header, records, status, *, project_root):
+    """Write portable path references without changing internal tile records."""
     manifest = dict(header)
     manifest["status"] = status
-    manifest["tiles"] = records
+
+    portable_records = []
+
+    for record in records:
+        portable_record = dict(record)
+
+        for key in ("file", "count_file"):
+            if portable_record.get(key):
+                portable_record[key] = _portable_path(
+                    portable_record[key],
+                    project_root,
+                )
+
+        portable_records.append(portable_record)
+
+    manifest["tiles"] = portable_records
+
     tmp = path.with_suffix(".json.tmp")
     with tmp.open("w", encoding="utf-8") as file:
         json.dump(manifest, file, indent=2)
+
     tmp.replace(path)
+
 
 
 def _mosaic(files, vrt_file, output_file, *, nodata_arg, cog_options,
@@ -657,7 +692,10 @@ def process_tiled_aoi(
                 if record["status"] == "failed" else ""
             )
         )
-        _write_manifest(manifest_file, header, records, "in_progress")
+        _write_manifest(
+    manifest_file, header, records, "in_progress",
+    project_root=project_root,
+)
 
     if max_workers == 1:
         for task in tasks:
@@ -674,14 +712,20 @@ def process_tiled_aoi(
     failed = [r for r in records if r["status"] == "failed"]
 
     if failed:
-        _write_manifest(manifest_file, header, records, "failed")
+        _write_manifest(
+    manifest_file, header, records, "failed",
+    project_root=project_root,
+)
         raise RuntimeError(
             f"{len(failed)} tile(s) failed. Completed tiles are kept in "
             f"{run_dir}; re-run with identical inputs to resume. "
             f"First error: {failed[0]['error']}"
         )
 
-    _write_manifest(manifest_file, header, records, "tiles_complete")
+    _write_manifest(
+    manifest_file, header, records, "tiles_complete",
+    project_root=project_root,
+)
 
     tile_files = sorted(
         Path(r["file"]) for r in records if r.get("file")
@@ -815,8 +859,9 @@ def process_tiled_aoi(
         "excluded_scl_classes": excluded_classes_for(scl_classes),
         "per_observation_counts_computed": valid_count_file is not None,
         "valid_observation_count_raster": (
-            str(valid_count_file) if valid_count_file else None
-        ),
+    _portable_path(valid_count_file, project_root)
+    if valid_count_file else None
+),
     }
 
     # Generate display previews from the final exported COG.
@@ -845,7 +890,7 @@ def process_tiled_aoi(
         "tile_count": len(tasks),
         "tile_size_m": tile_size_m,
         "before_after_rgb_previews_generated": False,
-        "tile_manifest": str(manifest_file),
+        "tile_manifest": _portable_path(manifest_file, project_root),
         "preview_generated": bool(preview_paths),
         "preview_error": preview_error,
     }
@@ -874,13 +919,19 @@ def process_tiled_aoi(
     metadata["processing"]["mode"] = actual_mode
     metadata["processing"]["tile_size_m"] = tile_size_m
     metadata["processing"]["tile_count"] = len(tasks)
-    metadata["processing"]["tile_manifest"] = str(manifest_file)
+    metadata["processing"]["tile_manifest"] = _portable_path(
+    manifest_file,
+    project_root,
+)
     metadata["processing"]["workers"] = max_workers
     metadata["processing"]["elapsed_seconds"] = round(elapsed, 3)
 
     metadata_file = save_metadata(metadata, output_dir / "metadata.json")
 
-    _write_manifest(manifest_file, header, records, "completed")
+    _write_manifest(
+    manifest_file, header, records, "completed",
+    project_root=project_root,
+)
 
 
     if not keep_tiles:

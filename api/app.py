@@ -8,7 +8,8 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
-
+from urllib.parse import quote
+from fastapi.staticfiles import StaticFiles
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -29,6 +30,87 @@ app = FastAPI(
         "Supports single-product and multi-product requests."
     ),
 )
+# Local development: serve generated files from the project's outputs folder.
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount(
+    "/outputs",
+    StaticFiles(directory=str(OUTPUTS_DIR)),
+    name="outputs",
+)
+
+
+def _output_url(path):
+    """Return a local HTTP URL only for an existing file under outputs/."""
+    if not path:
+        return None
+
+    try:
+        candidate = Path(path).resolve()
+        relative_path = candidate.relative_to(OUTPUTS_DIR.resolve())
+    except (OSError, ValueError):
+        # Do not expose paths outside the configured output directory.
+        return None
+
+    if not candidate.is_file():
+        return None
+
+    return f"/outputs/{quote(relative_path.as_posix(), safe='/')}"
+
+
+def _add_frontend_links(result):
+    """Add browser-facing output URLs without removing existing result fields."""
+
+    def add_product_links(product_result):
+        if product_result.get("status") != "completed":
+            return
+
+        process = str(product_result.get("process", "")).upper()
+        product_path = product_result.get("product_path")
+        preview_path = None
+
+        if process in {"RGB", "FALSE_COLOR"} and product_path:
+            candidate = (
+                Path(product_path).parent
+                / f"{process.lower()}_preview.png"
+            )
+            if candidate.is_file():
+                preview_path = candidate
+
+        product_result["frontend"] = {
+            "product_url": _output_url(product_path),
+            "metadata_url": _output_url(
+                product_result.get("metadata_path")
+            ),
+            "manifest_url": _output_url(
+                product_result.get("manifest_path")
+            ),
+            "valid_count_url": _output_url(
+                product_result.get("valid_count_path")
+            ),
+            "preview_url": _output_url(preview_path),
+        }
+
+    # Multi-product response.
+    products = result.get("products")
+    if isinstance(products, dict):
+        for product_result in products.values():
+            if isinstance(product_result, dict):
+                add_product_links(product_result)
+
+        result["frontend"] = {
+            "request_metadata_url": _output_url(
+                result.get("request_metadata_path")
+            )
+        }
+        return result
+
+    # Single-product response.
+    if result.get("product_path"):
+        add_product_links(result)
+
+    return result
 
 
 class EOProcessRequest(BaseModel):
@@ -108,8 +190,7 @@ async def process(request: EOProcessRequest):
 
     try:
         if request.products is not None:
-            # The multi-product wrapper validates each product against
-            # OUTPUT_NAMES and shares one Sentinel-2 scene search.
+            # The multi-product wrapper validates products and shares a scene search.
             result = await run_in_threadpool(
                 run_processing,
                 aoi=request.aoi,
@@ -133,7 +214,7 @@ async def process(request: EOProcessRequest):
             ):
                 raise HTTPException(status_code=422, detail=result)
 
-            return result
+            return _add_frontend_links(result)
 
         # Preserve the original single-product endpoint and response.
         return await run_in_threadpool(

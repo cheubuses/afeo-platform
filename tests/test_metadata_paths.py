@@ -126,3 +126,52 @@ def test_create_metadata_saves_preview_reference_in_json(tmp_path):
     ).hexdigest()
     assert "cog" in saved["outputs"]
     assert str(project_root) not in json.dumps(preview_record)
+    
+    
+def test_manifest_paths_are_portable_and_internal_records_are_unchanged(
+    tmp_path,
+):
+    from eo.tiled_pipeline import _write_manifest
+
+    project_root = tmp_path / "project"
+    run_dir = project_root / "outputs" / "tiles" / "ndwi_run"
+    run_dir.mkdir(parents=True)
+
+    manifest_path = run_dir / "tile_manifest.json"
+    tile_path = run_dir / "ndwi_tile_1.tif"
+    count_path = run_dir / "validcount_tile_1.tif"
+
+    records = [
+        {
+            "tile_id": "tile_1",
+            "status": "completed",
+            "file": str(tile_path),
+            "count_file": str(count_path),
+        }
+    ]
+
+    _write_manifest(
+        manifest_path,
+        {"product": "NDWI"},
+        records,
+        "completed",
+        project_root=project_root,
+    )
+
+    saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+    saved_record = saved["tiles"][0]
+
+    assert saved_record["file"] == (
+        "outputs/tiles/ndwi_run/ndwi_tile_1.tif"
+    )
+    assert saved_record["count_file"] == (
+        "outputs/tiles/ndwi_run/validcount_tile_1.tif"
+    )
+
+    assert not Path(saved_record["file"]).is_absolute()
+    assert not Path(saved_record["count_file"]).is_absolute()
+
+    # The records used by the processing code remain local absolute paths.
+    assert records[0]["file"] == str(tile_path)
+    assert records[0]["count_file"] == str(count_path)
+
