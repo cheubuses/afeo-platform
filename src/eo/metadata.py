@@ -22,7 +22,7 @@ def _json_default(value):
 
 
 def _file_record(path, project_root):
-    """Describe an existing output file and calculate its SHA-256 checksum."""
+    """Describe a file without exposing machine-specific absolute paths."""
     path = Path(path)
 
     if not path.is_file():
@@ -32,9 +32,10 @@ def _file_record(path, project_root):
     root = Path(project_root).resolve()
 
     try:
-        display_path = str(resolved_path.relative_to(root))
+        display_path = resolved_path.relative_to(root).as_posix()
     except ValueError:
-        display_path = str(resolved_path)
+        # External files should not leak a Windows or WSL absolute path.
+        display_path = resolved_path.name
 
     checksum = hashlib.sha256()
 

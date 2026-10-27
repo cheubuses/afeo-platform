@@ -53,6 +53,7 @@ from eo.composites import create_temporal_composite
 from eo.processor import process_data
 from eo.export import export_cog
 from eo.metadata import create_metadata, save_metadata
+from eo.previews import create_cog_preview
 
 
 OUTPUT_NAMES = {
@@ -818,12 +819,35 @@ def process_tiled_aoi(
         ),
     }
 
+    # Generate display previews from the final exported COG.
+    # Preview failures must not invalidate an otherwise successful product.
+    preview_paths = {}
+    preview_error = None
+
+    if process in {"RGB", "FALSE_COLOR"}:
+        preview_path = output_dir / f"{process.lower()}_preview.png"
+
+        try:
+            create_cog_preview(
+                output_file,
+                preview_path,
+                process,
+            )
+            preview_paths[f"{process.lower()}_preview"] = preview_path
+        except Exception as exc:
+            preview_error = str(exc)
+            print(
+                f"WARNING: Could not create {process} preview: {exc}"
+            )
+
     masking_comparison = {
         "processing_mode": actual_mode,
         "tile_count": len(tasks),
         "tile_size_m": tile_size_m,
         "before_after_rgb_previews_generated": False,
         "tile_manifest": str(manifest_file),
+        "preview_generated": bool(preview_paths),
+        "preview_error": preview_error,
     }
 
     metadata = create_metadata(
@@ -840,7 +864,7 @@ def process_tiled_aoi(
         mask_stats=mask_stats,
         masking_comparison=masking_comparison,
         project_root=project_root,
-        preview_paths={},
+        preview_paths=preview_paths,
         valid_count_path=valid_count_file,
         valid_count_created=valid_count_file is not None,
     )
