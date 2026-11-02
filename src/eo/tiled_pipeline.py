@@ -29,6 +29,7 @@ import dask
 import numpy as np
 import pystac
 import rasterio
+import traceback
 import rioxarray
 from rasterio.features import geometry_mask
 from pyproj import Transformer
@@ -53,7 +54,14 @@ from eo.composites import create_temporal_composite
 from eo.processor import process_data
 from eo.export import export_cog
 from eo.metadata import create_metadata, save_metadata
-from eo.previews import create_cog_preview
+from eo.previews import (
+    create_cog_preview,
+    create_ndvi_preview,
+    create_ndwi_preview,
+    create_ndmi_preview,
+    create_nbr_preview,
+    create_nbr2_preview,
+)
 
 
 OUTPUT_NAMES = {
@@ -273,12 +281,28 @@ def _run_tile(task, items):
     # Compute the shared graph once so the S3 reads are not repeated.
     compute_started = time.perf_counter()
 
-    if count is not None:
-        result, count = dask.persist(result, count)
-    else:
-        (result,) = dask.persist(result)
+    # Fully masked pixels are expected around clouds and outside scene
+    # coverage. NumPy may warn when a median pixel has no valid observations;
+    # the final finite-pixel check below distinguishes that from an empty tile.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="All-NaN slice encountered",
+            category=RuntimeWarning,
+        )
+        if count is not None:
+            result, count = dask.persist(result, count)
+        else:
+            (result,) = dask.persist(result)
 
     compute_seconds = time.perf_counter() - compute_started
+
+    if not bool(result.notnull().any().compute().item()):
+        raise RuntimeError(
+            f"{tile_id}: NO_VALID_PIXELS — {process} has no valid "
+            "pixels after SCL masking and temporal compositing."
+        )
 
     # Clip the final 2D product to the exact AOI polygon.
     if result.rio.crs is None:
@@ -319,6 +343,7 @@ def _run_tile(task, items):
     }
 
 
+
 def _process_one_tile(task):
     """Process one tile with retries. Never raises; returns a record."""
 
@@ -337,31 +362,58 @@ def _process_one_tile(task):
         }
 
     configure_s3_access(aws_unsigned=True)
-
     items = [pystac.Item.from_dict(d) for d in task["item_dicts"]]
 
     last_error = None
+    error_history = []
 
     for attempt in range(1, task["retries"] + 1):
         try:
+            print(
+                f"[{tile_id}] Attempt {attempt}/{task['retries']}",
+                flush=True,
+            )
+
             with rasterio.Env(**GDAL_ENV):
                 return _run_tile(task, items)
-        except Exception as exc:  # noqa: BLE001 - report and retry
+
+        except Exception as exc:
             last_error = exc
+            error_history.append({
+                "attempt": attempt,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            })
+
+            print(
+                f"[{tile_id}] Attempt {attempt} failed:\n"
+                f"{traceback.format_exc()}",
+                flush=True,
+            )
+
             for leftover in (tile_file, count_file):
                 if leftover is None:
                     continue
-                partial = leftover.with_name(leftover.stem + ".partial.tif")
+
+                partial = leftover.with_name(
+                    leftover.stem + ".partial.tif"
+                )
+
                 if partial.exists():
                     partial.unlink()
-            time.sleep(2 * attempt)
+
+            if attempt < task["retries"]:
+                time.sleep(2 * attempt)
 
     return {
         "tile_id": tile_id,
         "bounds": list(task["tile"]["bounds"]),
         "status": "failed",
         "error": f"{type(last_error).__name__}: {last_error}",
+        "error_history": error_history,
     }
+
 
 
 # ------------------------------------------------------------
@@ -785,6 +837,25 @@ def process_tiled_aoi(
             f"Final mosaic failed strict COG validation: {errors}"
         )
 
+    # A file that exists and passes COG validation can still contain only
+    # NoData. Do not report such an output as a successful product.
+    with rasterio.open(output_file) as src:
+        valid_product_pixels = 0
+        for _, window in src.block_windows(1):
+            block = src.read(window=window, masked=True)
+            values = np.asarray(block.data)
+            valid_mask = (
+                ~np.ma.getmaskarray(block).any(axis=0)
+                & np.isfinite(values).all(axis=0)
+            )
+            valid_product_pixels += int(valid_mask.sum())
+
+    if valid_product_pixels == 0:
+        raise RuntimeError(
+            f"NO_VALID_PIXELS: {process} mosaic contains no finite, "
+            "unmasked pixels after AOI clipping and SCL masking."
+        )
+
     # --------------------------------------------------------
     # Mosaic valid-observation-count raster
     # --------------------------------------------------------
@@ -866,33 +937,86 @@ def process_tiled_aoi(
 
     # Generate display previews from the final exported COG.
     # Preview failures must not invalidate an otherwise successful product.
+        # Generate display previews from the final exported COG.
+    # Preview failures must not invalidate an otherwise successful product.
     preview_paths = {}
     preview_error = None
+    preview_file = None
 
-    if process in {"RGB", "FALSE_COLOR"}:
+    print(
+        f"[PREVIEW DEBUG] Product={process}, "
+        f"COG={output_file}, exists={Path(output_file).is_file()}",
+        flush=True,
+    )
+
+    if process in {"RGB", "FALSE_COLOR", "NDVI", "NDWI", "NDMI", "NBR", "NBR2"}:
         preview_path = output_dir / f"{process.lower()}_preview.png"
 
+        print(
+            f"[PREVIEW DEBUG] Target={preview_path}",
+            flush=True,
+        )
+
         try:
-            create_cog_preview(
-                output_file,
-                preview_path,
-                process,
-            )
-            preview_paths[f"{process.lower()}_preview"] = preview_path
-        except Exception as exc:
-            preview_error = str(exc)
+            if process == "NDVI":
+                print("[PREVIEW DEBUG] Calling create_ndvi_preview", flush=True)
+                created_path = create_ndvi_preview(output_file, preview_path)
+
+            elif process == "NDWI":
+                print("[PREVIEW DEBUG] Calling create_ndwi_preview", flush=True)
+                created_path = create_ndwi_preview(output_file, preview_path)
+
+            elif process == "NDMI":
+                print("[PREVIEW DEBUG] Calling create_ndmi_preview", flush=True)
+                created_path = create_ndmi_preview(output_file, preview_path)
+
+            elif process == "NBR":
+                print("[PREVIEW DEBUG] Calling create_nbr_preview", flush=True)
+                created_path = create_nbr_preview(output_file, preview_path)
+
+            elif process == "NBR2":
+                print("[PREVIEW DEBUG] Calling create_nbr2_preview", flush=True)
+                created_path = create_nbr2_preview(output_file, preview_path)
+
+            else:
+                print("[PREVIEW DEBUG] Calling create_cog_preview", flush=True)
+                created_path = create_cog_preview(
+                    output_file, preview_path, process
+                )
+
+            preview_file = Path(created_path)
+
+            if not preview_file.is_file():
+                raise FileNotFoundError(
+                    f"Preview function returned but file is missing: "
+                    f"{preview_file}"
+                )
+
+            preview_paths[f"{process.lower()}_preview"] = preview_file
+
             print(
-                f"WARNING: Could not create {process} preview: {exc}"
+                f"[PREVIEW DEBUG] SUCCESS: {preview_file}",
+                flush=True,
             )
+
+        except Exception as exc:
+            preview_error = f"{type(exc).__name__}: {exc}"
+
+            print(
+                f"[PREVIEW DEBUG] FAILED: {preview_error}",
+                flush=True,
+            )
+
+            import traceback
+            traceback.print_exc()
+
 
     masking_comparison = {
         "processing_mode": actual_mode,
         "tile_count": len(tasks),
         "tile_size_m": tile_size_m,
         "before_after_rgb_previews_generated": False,
-        "tile_manifest": _portable_path(manifest_file, project_root),
-        "preview_generated": bool(preview_paths),
-        "preview_error": preview_error,
+        "tile_manifest": str(manifest_file),
     }
 
     metadata = create_metadata(
@@ -956,6 +1080,7 @@ def process_tiled_aoi(
         "metadata_file": metadata_file,
         "manifest_file": manifest_file,
         "valid_count_file": valid_count_file,
+        "preview_file": preview_file,
         "tile_count": len(tasks),
         "processing_mode": actual_mode,
         "elapsed_seconds": elapsed,

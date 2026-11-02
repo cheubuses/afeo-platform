@@ -59,23 +59,28 @@ def test_products_endpoint_uses_pipeline_product_list():
     assert result["products"] == list(app_module.OUTPUT_NAMES)
 
 
-def test_single_product_request_remains_supported(monkeypatch):
+def test_single_product_request_uses_common_response_contract(monkeypatch):
     install_direct_threadpool(monkeypatch)
     captured = {}
 
-    def fake_pipeline(**kwargs):
+    def fake_processing(**kwargs):
         captured.update(kwargs)
         return {
             "status": "completed",
-            "process": kwargs["process"],
-            "product_path": "/tmp/ndwi.tif",
+            "requested_products": kwargs["products"],
+            "completed_products": 1,
+            "failed_products": 0,
+            "products": {
+                "NDWI": {
+                    "status": "completed",
+                    "process": "NDWI",
+                    "product_path": "/tmp/ndwi.tif",
+                }
+            },
+            "errors": [],
         }
 
-    monkeypatch.setattr(
-        app_module,
-        "run_eo_pipeline",
-        fake_pipeline,
-    )
+    monkeypatch.setattr(app_module, "run_processing", fake_processing)
 
     result = call_process({
         **BASE_REQUEST,
@@ -84,7 +89,9 @@ def test_single_product_request_remains_supported(monkeypatch):
 
     assert result["status"] == "completed"
     assert result["process"] == "NDWI"
-    assert captured["process"] == "NDWI"
+    assert captured["products"] == ["NDWI"]
+    assert set(result["products"]) == {"NDWI"}
+    assert "frontend" in result["products"]["NDWI"]
 
 
 def test_multi_product_request_uses_wrapper(monkeypatch):
@@ -141,3 +148,61 @@ def test_unknown_request_field_is_rejected():
             **BASE_REQUEST,
             unexpected_field=True,
         )
+
+
+
+def test_ndwi_frontend_links_include_display_legend(tmp_path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    product_dir = outputs / "request" / "NDWI"
+    product_dir.mkdir(parents=True)
+    cog = product_dir / "ndwi.tif"
+    preview = product_dir / "ndwi_preview.png"
+    metadata = product_dir / "metadata.json"
+    manifest = product_dir / "tile_manifest.json"
+    for path in (cog, preview, metadata, manifest):
+        path.write_bytes(b"test")
+
+    monkeypatch.setattr(app_module, "OUTPUTS_DIR", outputs)
+    result = app_module._add_frontend_links({
+        "status": "completed",
+        "products": {
+            "NDWI": {
+                "status": "completed",
+                "process": "NDWI",
+                "product_path": str(cog),
+                "preview_path": str(preview),
+                "metadata_path": str(metadata),
+                "manifest_path": str(manifest),
+            }
+        },
+        "request_metadata_path": str(product_dir / "request_metadata.json"),
+    })
+    frontend = result["products"]["NDWI"]["frontend"]
+    assert frontend["product_url"] == "/outputs/request/NDWI/ndwi.tif"
+    assert frontend["preview_url"] == "/outputs/request/NDWI/ndwi_preview.png"
+    assert frontend["visualization"]["minimum"] == -1.0
+    assert frontend["visualization"]["maximum"] == 1.0
+    assert frontend["visualization"]["legend"][0]["label"].startswith("Dry")
+    assert result["frontend"]["request_metadata_url"] is None
+
+def test_request_defaults_to_sentinel2():
+    model = app_module.EOProcessRequest(**BASE_REQUEST)
+
+    assert model.source == "sentinel2"
+
+
+def test_products_endpoint_supports_source_selection():
+    result = app_module.supported_products(source="sentinel2")
+
+    assert result["source"] == "sentinel2"
+    assert result["implemented"] is True
+    assert set(result["products"]) == set(app_module.get_supported_products("sentinel2"))
+
+
+def test_products_endpoint_rejects_unknown_source():
+    with pytest.raises(HTTPException) as exc_info:
+        app_module.supported_products(source="unknown")
+
+    assert exc_info.value.status_code == 404
+    
+    

@@ -1171,6 +1171,9 @@ def main():
         },
 
         tile_size_m=5000,
+processing_mode="auto",
+max_window_size_m=12000,
+max_workers=1,
 
     )
 
@@ -2703,3 +2706,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+

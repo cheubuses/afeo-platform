@@ -12,7 +12,7 @@ The current workflow supports these image products:
 - **False-colour infrared composite:** NIR displayed as red, red displayed as green, and green displayed as blue.
 - **NDVI:** The Normalized Difference Vegetation Index calculated from red and near-infrared surface reflectance.
 
-Each product is exported as a Cloud Optimized GeoTIFF (COG) with a matching PNG preview. Outputs also include masking statistics and run metadata.
+Each successful product is exported as a Cloud Optimized GeoTIFF (COG). Lightweight PNG previews are generated for RGB, false-colour infrared, and NDWI when valid pixels are available. Outputs also include masking statistics and run metadata.
 
 ## 2. Core Features
 
@@ -108,7 +108,7 @@ The current `calculate_ndvi()` implementation expects already-scaled surface ref
 
 ### Previews
 
-The application generates PNG previews for RGB, false-colour infrared and NDVI products.
+The application generates PNG previews for RGB and false-colour infrared products. The FastAPI integration also generates a display-only NDWI preview with a fixed colour scale and legend.
 
 It also generates before-masking and after-masking RGB previews using shared display-stretch limits, enabling a more consistent visual comparison of the masking effect.
 
@@ -275,4 +275,120 @@ The main remaining verification and development tasks are:
 
 The pipeline is designed to provide a repeatable processing workflow that accepts AOI and processing parameters and returns georeferenced raster products together with previews and metadata.
 
-he intended integration is with the AFROSAT FastAPI backend, which can use the generated COGs and metadata manifest to expose EO processing results to the frontend. A stable callable processing interface and comprehensive input validation are still part of the development roadmap.
+The intended integration is with the AFROSAT FastAPI backend, which can use generated COGs and metadata manifests to expose EO processing results to the frontend. The reusable processing entry points and request validation are implemented in `src/eo/pipeline.py`, `src/eo/api.py`, and `api/app.py`.
+
+## 11. FastAPI Integration Handoff
+
+The FastAPI app is in `api/app.py`. Run locally from the repository root:
+
+```bash
+uvicorn api.app:app --reload
+```
+
+Endpoints:
+- `GET /health` — lightweight service health.
+- `GET /products` — current supported product codes.
+- `POST /process` — one product (`process`) or multiple products (`products`).
+- `GET /docs` — interactive OpenAPI documentation for local development.
+
+### Request payloads
+
+Single product:
+
+```json
+{
+  "aoi": {
+    "type": "Polygon",
+    "coordinates": [[[36.0, 2.0], [36.1, 2.0], [36.1, 2.1], [36.0, 2.1], [36.0, 2.0]]]
+  },
+  "start_date": "2026-03-01",
+  "end_date": "2026-03-31",
+  "process": "NDWI",
+  "composite_method": "median",
+  "cloud_cover_threshold": 20
+}
+```
+
+Multiple products use the same fields, replacing `process` with a list:
+
+```json
+{
+  "aoi": {
+    "type": "Polygon",
+    "coordinates": [[[36.0, 2.0], [36.1, 2.0], [36.1, 2.1], [36.0, 2.1], [36.0, 2.0]]]
+  },
+  "start_date": "2026-03-01",
+  "end_date": "2026-03-31",
+  "products": ["NDWI", "NDVI", "RGB"],
+  "composite_method": "median",
+  "cloud_cover_threshold": 20
+}
+```
+
+Supported products are returned dynamically by `GET /products` and currently include `RGB`, `FALSE_COLOR`, `NDVI`, `NDWI`, `NDMI`, `NBR`, and `NBR2`. Composite methods are `median` and `mean`. AOI must be a valid GeoJSON Polygon or MultiPolygon in WGS84 longitude/latitude.
+
+### Response contract
+
+Both single-product and multi-product requests return the same top-level shape. A single-product request still includes its product in `products` and also returns `process` as a convenience alias.
+
+```json
+{
+  "status": "completed",
+  "request_id": "generated-request-id",
+  "request_output_dir": "local-output-location",
+  "request_metadata_path": "local-output-location/request_metadata.json",
+  "requested_products": ["NDWI"],
+  "completed_products": 1,
+  "failed_products": 0,
+  "products": {
+    "NDWI": {
+      "status": "completed",
+      "process": "NDWI",
+      "product_path": "local-output-location/NDWI/ndwi.tif",
+      "metadata_path": "local-output-location/NDWI/metadata.json",
+      "manifest_path": "local-output-location/NDWI/tiles/ndwi_run/tile_manifest.json",
+      "valid_count_path": "local-output-location/NDWI/valid_observation_count.tif",
+      "preview_path": "local-output-location/NDWI/ndwi_preview.png",
+      "frontend": {
+        "product_url": "/outputs/...",
+        "metadata_url": "/outputs/...",
+        "manifest_url": "/outputs/...",
+        "valid_count_url": "/outputs/...",
+        "preview_url": "/outputs/...",
+        "visualization": {
+          "type": "singleband-pseudocolor",
+          "band": 1,
+          "minimum": -1.0,
+          "maximum": 1.0,
+          "units": "unitless"
+        }
+      }
+    }
+  },
+  "errors": [],
+  "frontend": {
+    "request_metadata_url": "/outputs/..."
+  }
+}
+```
+
+The example paths and request ID above are illustrative, not actual outputs. Optional output URLs may be `null` if a file is absent or outside the local `outputs/` directory. For `NDWI`, `preview_url` points to a display-only PNG with a fixed -1 to +1 colour scale and legend. The scientific `ndwi.tif` COG is not colour-stretched or modified.
+
+`request_metadata.json` stores product output references relative to the request folder, for example `NDWI/ndwi.tif`, rather than absolute machine-specific paths. The per-product `metadata.json` and tile manifest also use portable relative paths where supported.
+
+### Status and frontend handling
+
+- `completed`: all requested products completed and contain valid output pixels.
+- `partial_success`: at least one product completed and at least one failed.
+- `failed`: no requested product completed.
+- Product errors include codes such as `INVALID_REQUEST`, `NO_SCENES_FOUND`, `NO_VALID_PIXELS`, `TILE_PROCESSING_FAILED`, `GDAL_TOOLS_MISSING`, and `PROCESSING_FAILED`.
+
+Frontend clients should use `products[PRODUCT].frontend.product_url` to access the scientific COG and `preview_url` for quick display. Use `metadata_url` for raster metadata, `manifest_url` for tile-level processing details, and `valid_count_url` when available. NDWI styling is display-only; use the COG values for analysis and any calculations.
+
+### Deployment boundary
+
+The `/outputs` static-file mount is for local development and is not a durable Cloud Run storage solution. In deployment, the platform integration should translate these relative references to the configured object-storage URLs and register metadata/status in the existing platform services. GCS upload, PostGIS registration, job orchestration/status, and frontend delivery remain outside this EO-processing package and are not duplicated here. The pipeline returns paths and structured metadata; a deployment-specific storage adapter is responsible for turning those references into durable cloud URLs.
+
+### Validation note
+
+A product is not considered successful when its exported mosaic contains no finite, unmasked pixels. All-NaN warnings can occur for pixels masked in every observation; those are expected locally, but the tile and final mosaic are now checked so an entirely empty product is returned as an error instead of a false success. PySTAC warnings should be evaluated using the full warning text and the affected item/asset; the archive provided for this handoff does not include a captured runtime warning log, so their exact origin cannot be confirmed from source alone.

@@ -1,5 +1,5 @@
 """Reusable multi-product entry point for the EO processing pipeline."""
-
+from eo.registry import get_source_config
 from datetime import date
 import json
 from math import isfinite
@@ -12,7 +12,7 @@ from odc.stac import configure_s3_access
 from eo.pipeline import run_eo_pipeline
 from eo.stac import connect_to_catalog
 from eo.sentinel2 import search_sentinel2, select_best_scene
-from eo.tiled_pipeline import OUTPUT_NAMES
+
 
 
 def _validate_request(
@@ -22,10 +22,18 @@ def _validate_request(
     max_cloud_cover,
     composite_method,
     products,
+    source="sentinel2",
 ):
-    """Validate and normalize a processing request."""
+    source_config = get_source_config(source)
+    source = source_config.name
 
-    # Accept either a Shapely geometry or a GeoJSON geometry dictionary.
+    if not source_config.implemented:
+        raise ValueError(
+            f"SOURCE_NOT_IMPLEMENTED: Source {source!r} is registered "
+            f"but not implemented. {source_config.description}"
+        )
+    
+      # Accept either a Shapely geometry or a GeoJSON geometry dictionary.
     try:
         geometry = shape(aoi) if isinstance(aoi, dict) else aoi
     except Exception as exc:
@@ -95,10 +103,12 @@ def _validate_request(
     for value in products:
         product = str(value).strip().upper()
 
-        if product not in OUTPUT_NAMES:
+        if product not in source_config.products:
+            supported = ", ".join(source_config.products)
+
             raise ValueError(
-                f"Unsupported product {product!r}. "
-                f"Supported products: {', '.join(OUTPUT_NAMES)}."
+                f"Unsupported product {product!r} for source "
+                f"{source!r}. Supported products: {supported}."
             )
 
         if product not in normalized_products:
@@ -114,12 +124,61 @@ def _validate_request(
     )
 
 
+def _portable_request_metadata(value, request_dir):
+    """Recursively replace local output paths with request-relative refs."""
+    request_dir = Path(request_dir).resolve()
+
+    if isinstance(value, dict):
+        return {
+            key: _portable_request_metadata(item, request_dir)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _portable_request_metadata(item, request_dir)
+            for item in value
+        ]
+    if isinstance(value, str):
+        # Path fields are explicitly identified by their key in the dict
+        # traversal below; this string branch also removes the request-root
+        # from diagnostic messages such as resumable tile failures.
+        return value.replace(str(request_dir), ".")
+    return value
+
+
+def _portable_product_results(product_results, request_dir):
+    """Return product metadata with path-valued fields relative to request."""
+    path_keys = {
+        "product_path", "metadata_path", "manifest_path",
+        "valid_count_path", "preview_path", "run_dir",
+    }
+
+    def convert(value, key=None):
+        if isinstance(value, dict):
+            return {k: convert(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [convert(item) for item in value]
+        if isinstance(value, str):
+            if key in path_keys:
+                try:
+                    return Path(value).resolve().relative_to(
+                        Path(request_dir).resolve()
+                    ).as_posix()
+                except (OSError, ValueError):
+                    return Path(value).name
+            return value.replace(str(Path(request_dir).resolve()), ".")
+        return value
+
+    return convert(product_results)
+
+
 def run_processing(
     *,
     aoi,
     start_date,
     end_date,
     products,
+    source="sentinel2",
     max_cloud_cover=20,
     composite_method="median",
     output_dir=None,
@@ -173,16 +232,28 @@ def run_processing(
             max_cloud_cover,
             composite_method,
             products,
+            source=source,
         )
 
     except (ValueError, TypeError) as exc:
+        message = str(exc)
+
+        error_code = (
+            "SOURCE_NOT_IMPLEMENTED"
+            if "SOURCE_NOT_IMPLEMENTED:" in message
+            else "INVALID_REQUEST"
+        )
+
         return {
             "status": "failed",
             "request_id": request_id,
+            "source": str(source).strip().lower(),
             "errors": [
                 {
-                    "code": "INVALID_REQUEST",
-                    "message": str(exc),
+                    "code": error_code,
+                    "message": message.replace(
+                        "SOURCE_NOT_IMPLEMENTED:", ""
+                    ).strip(),
                 }
             ],
             "products": {},
@@ -270,6 +341,8 @@ def run_processing(
 
             if "No Sentinel-2 scenes were found" in message:
                 error_code = "NO_SCENES_FOUND"
+            elif "NO_VALID_PIXELS" in message:
+                error_code = "NO_VALID_PIXELS"
             elif "tile(s) failed" in message:
                 error_code = "TILE_PROCESSING_FAILED"
             elif "gdalbuildvrt and gdal_translate are required" in message:
@@ -341,6 +414,7 @@ def run_processing(
         "end_date": end,
         "max_cloud_cover": cloud_limit,
         "composite_method": method,
+        "source": source,
         "aoi_type": geometry.geom_type,
         "requested_products": normalized_products,
         "completed_products": completed_count,
@@ -357,14 +431,17 @@ def run_processing(
         "end_date": end,
         "max_cloud_cover": cloud_limit,
         "composite_method": method,
+        "source": source,
         "aoi_type": geometry.geom_type,
         "aoi_bounds_wgs84": list(geometry.bounds),
         "requested_products": normalized_products,
         "completed_products": completed_count,
         "failed_products": failed_count,
         "scene_count": max(scene_counts, default=0),
-        "products": product_results,
-        "errors": errors,
+        "products": _portable_product_results(
+            product_results, request_output_dir
+        ),
+        "errors": _portable_request_metadata(errors, request_output_dir),
     }
 
     request_metadata_path.write_text(

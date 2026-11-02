@@ -220,6 +220,11 @@ def run_eo_pipeline(
             if result.get("valid_count_file") is not None
             else None
         ),
+        "preview_path": (
+            str(result["preview_file"])
+            if result.get("preview_file") is not None
+            else None
+        ),
         "processing_mode": result.get("processing_mode", processing_mode),
         "tile_count": int(result["tile_count"]),
         "elapsed_seconds": float(result["elapsed_seconds"]),

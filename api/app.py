@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from urllib.parse import quote
 from fastapi.staticfiles import StaticFiles
+from eo.registry import get_source_config, get_supported_products
+from eo.tiled_pipeline import OUTPUT_NAMES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -18,8 +20,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from eo.api import run_processing
-from eo.pipeline import run_eo_pipeline
-from eo.tiled_pipeline import OUTPUT_NAMES
+from eo.registry import get_source_config, get_supported_products
 
 
 app = FastAPI(
@@ -60,45 +61,66 @@ def _output_url(path):
 
 
 def _add_frontend_links(result):
-    """Add browser-facing output URLs without removing existing result fields."""
+    """Add browser URLs and frontend visualization hints to product results."""
 
     def add_product_links(product_result):
         if product_result.get("status") != "completed":
             return
 
-        process = str(product_result.get("process", "")).upper()
+        process = str(
+            product_result.get("process")
+            or product_result.get("product")
+            or ""
+        ).upper()
         product_path = product_result.get("product_path")
-        preview_path = None
+        preview_path = product_result.get("preview_path")
 
-        if process in {"RGB", "FALSE_COLOR"} and product_path:
-            candidate = (
-                Path(product_path).parent
-                / f"{process.lower()}_preview.png"
-            )
-            if candidate.is_file():
-                preview_path = candidate
+        if not preview_path and product_path:
+            preview_name = {
+                "RGB": "rgb_preview.png",
+                "FALSE_COLOR": "false_color_preview.png",
+                "NDVI": "ndvi_preview.png",
+                "NDWI": "ndwi_preview.png",
+            }.get(process)
+            if preview_name:
+                candidate = Path(product_path).parent / preview_name
+                if candidate.is_file():
+                    preview_path = str(candidate)
 
-        product_result["frontend"] = {
+        frontend = {
             "product_url": _output_url(product_path),
-            "metadata_url": _output_url(
-                product_result.get("metadata_path")
-            ),
-            "manifest_url": _output_url(
-                product_result.get("manifest_path")
-            ),
-            "valid_count_url": _output_url(
-                product_result.get("valid_count_path")
-            ),
+            "metadata_url": _output_url(product_result.get("metadata_path")),
+            "manifest_url": _output_url(product_result.get("manifest_path")),
+            "valid_count_url": _output_url(product_result.get("valid_count_path")),
             "preview_url": _output_url(preview_path),
         }
 
-    # Multi-product response.
+        if process == "NDWI":
+            frontend["visualization"] = {
+                "type": "singleband-pseudocolor",
+                "band": 1,
+                "minimum": -1.0,
+                "maximum": 1.0,
+                "palette": [
+                    "#8c510a", "#d8b365", "#f6e8c3",
+                    "#c7eae5", "#5ab4ac", "#01665e",
+                ],
+                "legend": [
+                    {"value": -1.0, "label": "Dry / negative NDWI"},
+                    {"value": 0.0, "label": "Near zero"},
+                    {"value": 1.0, "label": "Water / positive NDWI"},
+                ],
+                "units": "unitless",
+                "note": "Display styling only; use the COG for analysis.",
+            }
+
+        product_result["frontend"] = frontend
+
     products = result.get("products")
     if isinstance(products, dict):
         for product_result in products.values():
             if isinstance(product_result, dict):
                 add_product_links(product_result)
-
         result["frontend"] = {
             "request_metadata_url": _output_url(
                 result.get("request_metadata_path")
@@ -106,25 +128,25 @@ def _add_frontend_links(result):
         }
         return result
 
-    # Single-product response.
     if result.get("product_path"):
         add_product_links(result)
-
     return result
 
 
 class EOProcessRequest(BaseModel):
     """Validated request body for EO processing."""
+    source: str = Field(
+        default="sentinel2",
+        description="EO data source: sentinel2, landsat or tivion.",
+    )
 
     model_config = ConfigDict(extra="forbid")
-
-    aoi: dict[str, Any] = Field(
-        ...,
-        description="GeoJSON Polygon or MultiPolygon geometry in WGS84.",
-    )
+    aoi: dict
     start_date: date
     end_date: date
+    process: str = "NDVI"
 
+    
     # Keep the original single-product interface.
     process: str = Field(
         default="NDVI",
@@ -165,9 +187,20 @@ def health():
 
 
 @app.get("/products")
-def supported_products():
-    """Return the products currently supported by the processing pipeline."""
-    return {"products": list(OUTPUT_NAMES)}
+def supported_products(source: str = "sentinel2"):
+    """Return the products registered for the requested data source."""
+
+    try:
+        config = get_source_config(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {
+        "source": config.name,
+        "implemented": config.implemented,
+        "description": config.description,
+        "products": list(get_supported_products(config.name)),
+    }
 
 
 @app.post("/process")
@@ -180,6 +213,11 @@ async def process(request: EOProcessRequest):
             detail="start_date must be on or before end_date.",
         )
 
+    requested_products = (
+        request.products
+        if request.products is not None
+        else [request.process]
+    )
     common_options = {
         "composite_method": request.composite_method,
         "tile_size_m": request.tile_size_m,
@@ -189,53 +227,35 @@ async def process(request: EOProcessRequest):
     }
 
     try:
-        if request.products is not None:
-            # The multi-product wrapper validates products and shares a scene search.
-            result = await run_in_threadpool(
-                run_processing,
-                aoi=request.aoi,
-                start_date=request.start_date.isoformat(),
-                end_date=request.end_date.isoformat(),
-                products=request.products,
-                max_cloud_cover=request.cloud_cover_threshold,
-                output_dir=request.output_dir,
-                tile_retries=request.tile_retries,
-                write_valid_count=request.write_valid_count,
-                keep_tiles=request.keep_tiles,
-                scl_retained_classes=request.scl_retained_classes,
-                **common_options,
-            )
-
-            # The wrapper reports request-level validation failures
-            # as structured results rather than raising exceptions.
-            if result.get("status") == "failed" and any(
-                error.get("code") == "INVALID_REQUEST"
-                for error in result.get("errors", [])
-            ):
-                raise HTTPException(status_code=422, detail=result)
-
-            return _add_frontend_links(result)
-
-        # Preserve the original single-product endpoint and response.
-        return await run_in_threadpool(
-            run_eo_pipeline,
-            aoi_geometry=request.aoi,
+        # Both one-product and multi-product requests use the same response
+        # contract and the same shared-scene search implementation.
+        result = await run_in_threadpool(
+            run_processing,
+            aoi=request.aoi,
             start_date=request.start_date.isoformat(),
             end_date=request.end_date.isoformat(),
-            process=request.process,
-            composite_method=request.composite_method,
-            cloud_cover_threshold=request.cloud_cover_threshold,
+            products=requested_products,
+            max_cloud_cover=request.cloud_cover_threshold,
             output_dir=request.output_dir,
-            tile_size_m=request.tile_size_m,
-            processing_mode=request.processing_mode,
-            max_window_size_m=request.max_window_size_m,
-            max_workers=request.max_workers,
+            source=request.source,
             tile_retries=request.tile_retries,
             write_valid_count=request.write_valid_count,
             keep_tiles=request.keep_tiles,
             scl_retained_classes=request.scl_retained_classes,
-            input_parameters=request.input_parameters,
+            **common_options,
         )
+
+        if result.get("status") == "failed" and any(
+            error.get("code") == "INVALID_REQUEST"
+            for error in result.get("errors", [])
+        ):
+            raise HTTPException(status_code=422, detail=result)
+
+        # Preserve a simple single-product alias while retaining the common
+        # products dictionary for frontend code that handles either request.
+        if request.products is None:
+            result["process"] = str(request.process).strip().upper()
+        return _add_frontend_links(result)
 
     except HTTPException:
         raise

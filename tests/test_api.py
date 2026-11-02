@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-
+from eo.registry import get_source_config
 import pytest
 
 import eo.api as api
@@ -356,3 +356,65 @@ def test_multi_product_request_creates_labelled_folders_and_metadata(
     # The API response exposes the request folder and metadata path.
     assert result["request_output_dir"] == str(request_dir)
     assert result["request_metadata_path"] == str(metadata_path)
+
+
+
+def test_request_metadata_uses_relative_product_paths(
+    valid_request, monkeypatch, tmp_path
+):
+    def fake_pipeline(**call_kwargs):
+        product_dir = call_kwargs["output_dir"]
+        product_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "status": "completed",
+            "run_id": "run-ndwi",
+            "process": "NDWI",
+            "scene_count": 1,
+            "product_path": str(product_dir / "ndwi.tif"),
+            "metadata_path": str(product_dir / "metadata.json"),
+            "manifest_path": str(product_dir / "tile_manifest.json"),
+            "valid_count_path": str(product_dir / "valid_observation_count.tif"),
+            "preview_path": str(product_dir / "ndwi_preview.png"),
+        }
+
+    monkeypatch.setattr(api, "run_eo_pipeline", fake_pipeline)
+    result = run_processing(
+        **{
+            **valid_request,
+            "products": ["NDWI"],
+            "output_dir": tmp_path,
+        }
+    )
+
+    request_dir = Path(result["request_output_dir"])
+    saved = json.loads(
+        (request_dir / "request_metadata.json").read_text(encoding="utf-8")
+    )
+    product = saved["products"]["NDWI"]
+    assert product["product_path"] == "NDWI/ndwi.tif"
+    assert product["metadata_path"] == "NDWI/metadata.json"
+    assert product["manifest_path"] == "NDWI/tile_manifest.json"
+    assert product["valid_count_path"] == "NDWI/valid_observation_count.tif"
+    assert product["preview_path"] == "NDWI/ndwi_preview.png"
+    assert str(request_dir) not in json.dumps(saved)
+    
+
+def test_unimplemented_source_does_not_search_sentinel2(
+    valid_request, monkeypatch
+):
+    def fail_search(*args, **kwargs):
+        raise AssertionError(
+            "Sentinel-2 search must not run for an unimplemented source."
+        )
+
+    monkeypatch.setattr(api, "search_sentinel2", fail_search)
+
+    request = {
+        **valid_request,
+        "source": "tivion",
+    }
+
+    result = run_processing(**request)
+
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "SOURCE_NOT_IMPLEMENTED"
