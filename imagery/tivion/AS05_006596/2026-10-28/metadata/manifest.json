@@ -1,0 +1,36 @@
+{
+  "manifest_version": "1.0",
+  "product_id": "AS05_006596",
+  "acquisition_date": "2026-10-28",
+  "source": "tivion",
+  "platform": "AIRSAT-05",
+  "polarisation": "HH",
+  "assets": {
+    "source_original": "source/original.tiff",
+    "source_metadata_xml": "metadata/original.meta.xml",
+    "sar_hh_cog": "processed/sar_hh_cog.tif",
+    "sar_hh_preview": "processed/sar_hh_preview.jpg",
+    "sar_hh_thumbnail": "processed/sar_hh_thumbnail.jpg",
+    "metadata": "metadata/metadata.json",
+    "footprint": "metadata/footprint.geojson"
+  },
+  "asset_sizes_bytes": {
+    "source_original": 983232366,
+    "source_metadata_xml": 12817,
+    "sar_hh_cog": 527378174,
+    "sar_hh_preview": 2021942,
+    "sar_hh_thumbnail": 68639,
+    "metadata": 7528,
+    "footprint": 793
+  },
+  "checksums_sha256": {
+    "source_original": "8750eaddbf68664cd61960d5ea9bce143c97fc0b6e3d884875266a94a6285114",
+    "source_metadata_xml": "58881e0e91ad821b560c1d224fe76e24dfcf947d79eeda3bdeaaa34d8ca77d1f",
+    "sar_hh_cog": "487ce3b67ea8b642595804acd23e4c6318be46c6f7ea3f6631cd6b71a80b6bd3",
+    "sar_hh_preview": "1dec97e6731419a56b112008c482b044c022ce275ef304fbc00e9b31b5f9becb",
+    "sar_hh_thumbnail": "938f5b102027aa027179dfe056c8557f228727adf8edd38db1452c7b4a659409",
+    "metadata": "07bc44f2a783d18f62f370d7da19301f4ac711c5afc1fb252f1feaefb11ae759",
+    "footprint": "daafc8786e274cef15921187c12931166c3dde244b7642897a69e8d657592f13"
+  },
+  "generated_utc": "2026-11-02T20:08:43.539816+00:00"
+}

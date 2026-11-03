@@ -1,0 +1,312 @@
+<?xml version='1.0' encoding='utf-8'?>
+<product>
+    <segmentID>AS05_006596_20261028235248_FDJ0731_SAR0_CH_C_HH_02</segmentID>
+    <sceneID>AS05_006596_20261028235248_FDJ0731_SAR0_CH_C_HH_02_001</sceneID>
+    <satellite>AIRSAT-05</satellite>
+    <orbitID>6596</orbitID>
+    <orbitType>ELLIPSE</orbitType>
+    <attiType>STAR</attiType>
+    <Direction>DESC</Direction>
+    <LookSide>Right</LookSide>
+    <Productid>AS05_FDJ_GFJS_006596_E36.9_S1.3_20261028191626_L2_HH_02_001</Productid>
+    <DocumentIdentifier>1.0</DocumentIdentifier>
+    <ReceiveTime>2026-10-28 19:16:26.926114</ReceiveTime>
+    <IsZeroDopplerSteering>1</IsZeroDopplerSteering>
+    <Station>FDJ0731</Station>
+    <sensor>
+        <sensorID>SAR</sensorID>
+        <imagingMode>HSLIDINGSPOT</imagingMode>
+        <Lambda>0.031228</Lambda>
+        <RadarCenterFrequency>9.600000</RadarCenterFrequency>
+        <waveParams>
+            <wave>
+                <Wavecode>MX000</Wavecode>
+                <centerLookAngle>36.524781</centerLookAngle>
+                <Prf>5029.928072</Prf>
+                <proBandwidth>2745.936128</proBandwidth>
+                <sampleRate>800000000.000000</sampleRate>
+                <sampleDelay>4.390824e-03</sampleDelay>
+                <bandWidth>519999999.000000</bandWidth>
+                <pulseWidth>1.900000e-05</pulseWidth>
+                <frameLength>36352</frameLength>
+                <Compression>8:4BAQ</Compression>
+                <baqBlock>512</baqBlock>
+                <groundVelocity>1692.521820</groundVelocity>
+                <averageAltitude>1587.818848</averageAltitude>
+                <valueMGC>24.000000</valueMGC>
+                <biasdataStreamReal>1.432302</biasdataStreamReal>
+                <biasdataStreamImaginary>1.546657</biasdataStreamImaginary>
+                <standardDeviationdataStreamReal>0.477434</standardDeviationdataStreamReal>
+                <standardDeviationdataStreamImaginary>0.515552</standardDeviationdataStreamImaginary>
+                <gainImbalance>0.000000</gainImbalance>
+                <phaseOrthogonality>0.000000</phaseOrthogonality>
+                <rawDataHistogramdataStreamReal>0.000000</rawDataHistogramdataStreamReal>
+                <rawDataHistogramdataStreamImaginary>0.000000</rawDataHistogramdataStreamImaginary>
+                <rawDataechoSaturationReal>0.000000</rawDataechoSaturationReal>
+                <rawDataechoSaturationImaginary>0.000000</rawDataechoSaturationImaginary>
+            </wave>
+        </waveParams>
+        <spotlightPara>
+            <start>
+				  <prfCounter>720</prfCounter>
+				  <transmitBeamNum>1</transmitBeamNum>
+				  <receiveBeamNum>1</receiveBeamNum>
+				  <scanNum>0</scanNum>
+				  <squintAngle>1.430000</squintAngle>
+            </start>
+            <center>
+				  <prfCounter>16159</prfCounter>
+				  <transmitBeamNum>1</transmitBeamNum>
+				  <receiveBeamNum>1</receiveBeamNum>
+				  <scanNum>53</scanNum>
+				  <squintAngle>0.0</squintAngle>
+            </center>
+            <end>
+				  <prfCounter>31598</prfCounter>
+				  <transmitBeamNum>1</transmitBeamNum>
+				  <receiveBeamNum>1</receiveBeamNum>
+				  <scanNum>107</scanNum>
+				  <squintAngle>-1.429907</squintAngle>
+            </end>
+            <scanStep>0.01</scanStep>
+            <scanSwitchNum>107</scanSwitchNum>
+            <startScanAngle>1.430000</startScanAngle>
+		  </spotlightPara>
+	      <antennaMode>S</antennaMode>
+	      <agcMode>AGC</agcMode>
+		  <polarParams num="1">
+            <polar>
+				  <polarMode>HH</polarMode>
+            </polar>
+		  </polarParams>
+    </sensor>
+	  <platform>
+		  <CenterTime>2026-10-28 19:16:28.200000</CenterTime>
+		  <Rs>6898639.645079</Rs>
+		  <satVelocity>7684.420930</satVelocity>
+		  <RollAngle>-27.500115</RollAngle>
+		  <PitchAngle>0.082404</PitchAngle>
+		  <YawAngle>3.758118</YawAngle>
+		  <Xs>5248314.797857</Xs>
+		  <Ys>4471556.267857</Ys>
+		  <Zs>-226668.236429</Zs>
+		  <Vxs>786.250000</Vxs>
+		  <Vys>-1290.600000</Vys>
+		  <Vzs>-7534.350000</Vzs>
+	  </platform>
+    <GPS>
+        <GPSParam Num="1">
+            <TimeStamp>2026-10-28 19:16:25.200000</TimeStamp>
+            <xPosition>5245926.632857</xPosition>
+            <yPosition>4475403.177857</yPosition>
+            <zPosition>-204063.991429</zPosition>
+            <xVelocity>805.860000</xVelocity>
+            <yVelocity>-1274.000000</yVelocity>
+            <zVelocity>-7535.140000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="2">
+            <TimeStamp>2026-10-28 19:16:26.200000</TimeStamp>
+            <xPosition>5246729.222857</xPosition>
+            <yPosition>4474126.407857</yPosition>
+            <zPosition>-211599.001429</zPosition>
+            <xVelocity>799.320000</xVelocity>
+            <yVelocity>-1279.540000</yVelocity>
+            <zVelocity>-7534.880000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="3">
+            <TimeStamp>2026-10-28 19:16:27.200000</TimeStamp>
+            <xPosition>5247525.277857</xPosition>
+            <yPosition>4472844.102857</yPosition>
+            <zPosition>-219133.751429</zPosition>
+            <xVelocity>792.790000</xVelocity>
+            <yVelocity>-1285.070000</yVelocity>
+            <zVelocity>-7534.620000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="4">
+            <TimeStamp>2026-10-28 19:16:28.200000</TimeStamp>
+            <xPosition>5248314.797857</xPosition>
+            <yPosition>4471556.267857</yPosition>
+            <zPosition>-226668.236429</zPosition>
+            <xVelocity>786.250000</xVelocity>
+            <yVelocity>-1290.600000</yVelocity>
+            <zVelocity>-7534.350000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="5">
+            <TimeStamp>2026-10-28 19:16:29.200000</TimeStamp>
+            <xPosition>5249097.772857</xPosition>
+            <yPosition>4470262.907857</yPosition>
+            <zPosition>-234202.446429</zPosition>
+            <xVelocity>779.700000</xVelocity>
+            <yVelocity>-1296.120000</yVelocity>
+            <zVelocity>-7534.070000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="6">
+            <TimeStamp>2026-10-28 19:16:30.200000</TimeStamp>
+            <xPosition>5249874.202857</xPosition>
+            <yPosition>4468964.022857</yPosition>
+            <zPosition>-241736.371429</zPosition>
+            <xVelocity>773.160000</xVelocity>
+            <yVelocity>-1301.650000</yVelocity>
+            <zVelocity>-7533.780000</zVelocity>
+        </GPSParam>
+        <GPSParam Num="7">
+            <TimeStamp>2026-10-28 19:16:31.200000</TimeStamp>
+            <xPosition>5250644.092857</xPosition>
+            <yPosition>4467659.612857</yPosition>
+            <zPosition>-249270.001429</zPosition>
+            <xVelocity>766.620000</xVelocity>
+            <yVelocity>-1307.170000</yVelocity>
+            <zVelocity>-7533.480000</zVelocity>
+        </GPSParam>
+	  </GPS>
+    <ATTI>
+        <ATTIParam Num="1">
+            <TimeStamp>2026-10-28 19:16:26.200000</TimeStamp>
+            <rollAngle>-27.497889</rollAngle>
+            <pitchAngle>0.080870</pitchAngle>
+            <yawAngle>3.757876</yawAngle>
+        </ATTIParam>
+        <ATTIParam Num="2">
+            <TimeStamp>2026-10-28 19:16:27.200000</TimeStamp>
+            <rollAngle>-27.498829</rollAngle>
+            <pitchAngle>0.081550</pitchAngle>
+            <yawAngle>3.757881</yawAngle>
+        </ATTIParam>
+        <ATTIParam Num="3">
+            <TimeStamp>2026-10-28 19:16:28.200000</TimeStamp>
+            <rollAngle>-27.499645</rollAngle>
+            <pitchAngle>0.082076</pitchAngle>
+            <yawAngle>3.758110</yawAngle>
+        </ATTIParam>
+        <ATTIParam Num="4">
+            <TimeStamp>2026-10-28 19:16:29.200000</TimeStamp>
+            <rollAngle>-27.500115</rollAngle>
+            <pitchAngle>0.082404</pitchAngle>
+            <yawAngle>3.758118</yawAngle>
+        </ATTIParam>
+        <ATTIParam Num="5">
+            <TimeStamp>2026-10-28 19:16:30.200000</TimeStamp>
+            <rollAngle>-27.500148</rollAngle>
+            <pitchAngle>0.083437</pitchAngle>
+            <yawAngle>3.758407</yawAngle>
+        </ATTIParam>
+        <ATTIParam Num="6">
+            <TimeStamp>2026-10-28 19:16:31.200000</TimeStamp>
+            <rollAngle>-27.500908</rollAngle>
+            <pitchAngle>0.082727</pitchAngle>
+            <yawAngle>3.757533</yawAngle>
+        </ATTIParam>
+	  </ATTI>
+    <productinfo>
+        <NominalResolution>0.135346</NominalResolution>
+        <WidthInMeters>8.347784</WidthInMeters>
+        <productLevel>L2</productLevel>
+        <productType>HSLIDINGSPOT</productType>
+        <productFormat>GEOTIFF</productFormat>
+        <productGentime>2026-10-29 05:10:51.000000</productGentime>
+        <productPolar>HH</productPolar>
+    </productinfo>
+    <imageinfo>
+        <imagingTime>
+            <start>2026-10-28 19:16:26.926114</start>
+            <end>2026-10-28 19:16:33.064969</end>
+        </imagingTime>
+        <nearRange>658168.020477</nearRange>
+        <refRange>660866.152599</refRange>
+        <eqvFs>800000000.000000</eqvFs>
+        <eqvPRF>5029.928072</eqvPRF>
+        <center>
+            <Latitude>-1.319739</Latitude>
+            <Longitude>36.939310</Longitude>
+        </center>
+        <corner>
+            <topLeft>
+                <Latitude>-1.279723</Latitude>
+                <Longitude>36.984885</Longitude>
+            </topLeft>
+            <topRight>
+                <Latitude>-1.266055</Latitude>
+                <Longitude>36.910735</Longitude>
+            </topRight>
+            <bottomLeft>
+                <Latitude>-1.373979</Latitude>
+                <Longitude>36.966536</Longitude>
+            </bottomLeft>
+            <bottomRight>
+                <Latitude>-1.357920</Latitude>
+                <Longitude>36.892746</Longitude>
+            </bottomRight>
+        </corner>
+        <Width>20480</Width>
+        <Height>24000</Height>
+        <Widthspace>5.025935e-01</Widthspace>
+        <Heightspace>5.025935e-01</Heightspace>
+        <Imagebit>16</Imagebit>
+        <QualifyValue>4.902383e-01</QualifyValue>
+    </imageinfo>
+	  <processinfo>
+		  <processingFacility>AIRCAS</processingFacility>
+		  <processingTime>2026-10-29 05:10:51.397310310843</processingTime>
+		  <Algorithm>PPA</Algorithm>
+		  <softwareVersion>v1.0</softwareVersion>
+		  <lutApplied>APP</lutApplied>
+		  <EphemerisData>RT</EphemerisData>
+		  <AttitudeData>RT</AttitudeData>
+		  <CalibrationConst>0</CalibrationConst>
+		  <CalibDate>2025-01-01</CalibDate>
+		  <CalibSource>CALIB</CalibSource>
+		  <MultilookRange>1</MultilookRange>
+		  <MultilookAzimuth>1</MultilookAzimuth>
+		  <DoIQComp>0</DoIQComp>
+		  <DoChaComp>0</DoChaComp>
+		  <DoFPInnerImbalanceComp>0</DoFPInnerImbalanceComp>
+		  <DoFPCalibration>0</DoFPCalibration>
+		  <DoFrEst>0</DoFrEst>
+		  <DoFdcEst>0</DoFdcEst>
+		  <RangeWeightType>1</RangeWeightType>
+		  <RangeWeightPara>0.64</RangeWeightPara>
+		  <AzimuthWindowType>1</AzimuthWindowType>
+		  <AzimuthWeightPara>0.66</AzimuthWeightPara>
+		  <Sidelobe_Suppress_Flag>0</Sidelobe_Suppress_Flag>
+		  <Speckle_Suppress_Flag>0</Speckle_Suppress_Flag>
+		  <EarthModel>WGS_84</EarthModel>
+		  <ProjectModel>UTM</ProjectModel>
+		  <DEMModel>0</DEMModel>
+		  <QualifyModel>0</QualifyModel>
+		  <RadiometricModel>0</RadiometricModel>
+		  <incidenceAngleNearRange>39.742716</incidenceAngleNearRange>
+		  <incidenceAngleFarRange>40.371648</incidenceAngleFarRange>
+		  <DifferentBetweenDifferentChannel>0</DifferentBetweenDifferentChannel>
+		  <NumberOfPoleHHMissingLines>0</NumberOfPoleHHMissingLines>
+		  <NumberOfPoleHVMissingLines>0</NumberOfPoleHVMissingLines>
+		  <NumberOfPoleVHMissingLines>0</NumberOfPoleVHMissingLines>
+		  <NumberOfPoleVVMissingLines>0</NumberOfPoleVVMissingLines>
+		  <InnerCalibration>0</InnerCalibration>
+		  <ReceiverSettableGain>1</ReceiverSettableGain>
+		  <ProcessorGainCorrection>1</ProcessorGainCorrection>
+		  <ElevationPatternCorrection>1</ElevationPatternCorrection>
+		  <AmuthPatternCorrection>1</AmuthPatternCorrection>
+		  <AzimuthLookBandWidth>2745.936128</AzimuthLookBandWidth>
+		  <TotalProcessedAzimuthBandWidth>2745.936128</TotalProcessedAzimuthBandWidth>
+		  <RangeLookBandWidth>519999999.000000</RangeLookBandWidth>
+		  <DopplerParametersReferenceTime>0</DopplerParametersReferenceTime>
+		  <DEM>1587.818848</DEM>
+		  <equalnoiseNum>1</equalnoiseNum>
+		  <equalnoiseLevel>1</equalnoiseLevel>
+		  <equalnoiseLevelstepSize>1</equalnoiseLevelstepSize>
+		  <DopplerCentroidCoefficients>
+                <d0>0</d0>
+                <d1>0</d1>
+                <d2>0</d2>
+                <d3>0</d3>
+                <d4>0</d4>
+		  </DopplerCentroidCoefficients>
+		  <DopplerRateValuesCoefficients>
+                <r0>0</r0>
+                <r1>0</r1>
+                <r2>0</r2>
+                <r3>0</r3>
+                <r4>0</r4>
+		  </DopplerRateValuesCoefficients>
+	  </processinfo>
+</product>

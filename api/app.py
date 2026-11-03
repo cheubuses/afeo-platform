@@ -20,16 +20,32 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from eo.api import run_processing
-from eo.registry import get_source_config, get_supported_products
+from eo.tivion.inspection import inspect_airsat05, validate_airsat05
+from eo.tivion.processor import process_airsat05
+
 
 
 app = FastAPI(
     title="AFROSAT EO Processing API",
     version="1.1.0",
     description=(
-        "Programmatic Sentinel-2 processing for AFROSAT. "
-        "Supports single-product and multi-product requests."
+        "AFROSAT Earth Observation Processing API. "
+        "Provides Sentinel-2 optical processing and a "
+        "TIVION/AIRSAT-05 SAR request interface."
     ),
+    openapi_tags=[
+        {
+            "name": "Sentinel-2",
+            "description": "Operational Sentinel-2 optical image processing.",
+        },
+        {
+            "name": "TIVION SAR",
+            "description": (
+                "TIVION/AIRSAT-05 SAR processing options. "
+                "Processing functionality is under development."
+            ),
+        },
+    ],
 )
 # Local development: serve generated files from the project's outputs folder.
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
@@ -144,8 +160,7 @@ class EOProcessRequest(BaseModel):
     aoi: dict
     start_date: date
     end_date: date
-    process: str = "NDVI"
-
+    
     
     # Keep the original single-product interface.
     process: str = Field(
@@ -179,6 +194,72 @@ class EOProcessRequest(BaseModel):
     output_dir: str | None = None
     input_parameters: dict[str, Any] = Field(default_factory=dict)
 
+class TivionProcessRequest(BaseModel):
+    """Request model for TIVION/AIRSAT-05 SAR processing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_file: str = Field(
+        description="Path to the original AIRSAT-05 SAR TIFF product."
+    )
+    operation: Literal[
+    "inspect",
+    "validate",
+    "process",
+    ] | None = Field(
+        default=None,
+        description=(
+            "TIVION operation. If omitted, the legacy "
+            "georeferencing setting determines inspect or validate."
+        ),
+    )
+
+    output_dir: str | None = Field(
+        default=None,
+        description=("Optional output directory. If omitted, the processor creates a default scene/date directory."),
+    )
+
+    metadata_file: str | None = Field(
+        default=None,
+        description="Optional AIRSAT-05 XML metadata file."
+    )
+
+    aoi: dict | None = Field(
+        default=None,
+        description="Optional AOI in GeoJSON format."
+    )
+
+    product: Literal[
+        "SAR_INTENSITY",
+        "BACKSCATTER",
+        "SAR_RGB",
+    ] = "SAR_INTENSITY"
+
+    polarisation: Literal[
+        "HH",
+        "HV",
+        "VV",
+        "VH",
+    ] = "HH"
+
+    speckle_filter: Literal[
+        "none",
+        "lee",
+        "refined_lee",
+        "gamma_map",
+    ] = "none"
+
+    georeferencing: Literal[
+        "inspect",
+        "validate",
+        "apply_correction",
+    ] = "inspect"
+
+    output_format: Literal[
+        "GTiff",
+        "COG",
+    ] = "COG"
+
 
 @app.get("/health")
 def health():
@@ -186,7 +267,7 @@ def health():
     return {"status": "ok", "service": "afrosat-eo"}
 
 
-@app.get("/products")
+@app.get("/products", tags=["Sentinel-2"])
 def supported_products(source: str = "sentinel2"):
     """Return the products registered for the requested data source."""
 
@@ -203,7 +284,7 @@ def supported_products(source: str = "sentinel2"):
     }
 
 
-@app.post("/process")
+@app.post("/process", tags=["Sentinel-2"])
 async def process(request: EOProcessRequest):
     """Submit an AOI for single-product or multi-product processing."""
 
@@ -263,3 +344,135 @@ async def process(request: EOProcessRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    
+@app.post("/process/tivion", tags=["TIVION SAR"])
+async def process_tivion(request: TivionProcessRequest):
+    """
+    Inspect, validate or process TIVION/AIRSAT-05 SAR imagery.
+
+    TIVION processing is independent of the Sentinel-2 STAC workflow.
+    """
+
+    # Preserve the existing inspect/validate behavior when operation
+    # is omitted from older requests.
+    operation = request.operation
+
+    if operation is None:
+        operation = (
+            "inspect"
+            if request.georeferencing == "inspect"
+            else "validate"
+        )
+
+    if not request.metadata_file:
+        raise HTTPException(
+            status_code=422,
+            detail="metadata_file is required for TIVION operations.",
+        )
+
+    if operation == "process":
+
+        # Only expose functionality that the current processor
+        # actually implements and has been tested to preserve.
+        if request.product != "SAR_INTENSITY":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    f"{request.product} is not implemented. "
+                    "Currently supported: SAR_INTENSITY."
+                ),
+            )
+
+        if request.polarisation != "HH":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "The current processor has only been validated "
+                    "with HH polarisation."
+                ),
+            )
+
+        if request.speckle_filter != "none":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Speckle filtering is not implemented yet. "
+                    "Use speckle_filter='none'."
+                ),
+            )
+
+        if request.output_format != "COG":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Only COG output is currently implemented."
+                ),
+            )
+
+        if request.georeferencing == "apply_correction":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Georeferencing correction is not implemented."
+                ),
+            )
+
+        try:
+            result = await run_in_threadpool(
+                process_airsat05,
+                request.input_file,
+                request.metadata_file,
+                request.output_dir,
+            )
+
+            return result
+
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
+
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"TIVION processing failed: {exc}",
+            ) from exc
+
+    # Inspection and validation operations.
+    if request.georeferencing == "apply_correction":
+        raise HTTPException(
+            status_code=501,
+            detail="Georeferencing correction is not implemented yet.",
+        )
+
+    inspection_operation = (
+        inspect_airsat05
+        if operation == "inspect"
+        else validate_airsat05
+    )
+
+    try:
+        return await run_in_threadpool(
+            inspection_operation,
+            request.input_file,
+            request.metadata_file,
+        )
+
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
