@@ -1,394 +1,541 @@
-# Sentinel-2 Cloud-Native Earth Observation Processing
+# AFROSAT Earth Observation Processing Platform
 
-## 1. Project Overview
+# Technical documentation — 4 November 2026.  
 
-This project implements a Python-based Earth Observation (EO) processing pipeline that accesses Sentinel-2 Level-2A satellite imagery through a SpatioTemporal Asset Catalog (STAC), processes imagery for a user-defined area of interest (AOI), applies Scene Classification Layer (SCL) masking, creates temporal composites, and exports analysis-ready raster products.
+1. Project Overview
+AFROSAT is a Python-based Earth Observation (EO) processing platform for accessing, processing, validating and managing satellite imagery from multiple sources.
+It currently contains two independent workflows:
+1. Sentinel-2 Optical Processing — accesses Sentinel-2 Level-2A imagery through a SpatioTemporal Asset Catalog (STAC), applies Scene Classification Layer (SCL) masking, builds temporal composites and produces optical indices and image composites.
+2. TIVION/AIRSAT-05 SAR Processing — ingests AIRSAT-05 Synthetic Aperture Radar (SAR) imagery, inspects raster and XML metadata, validates geospatial consistency and generates Cloud Optimized GeoTIFFs (COGs) with supporting metadata and previews.
+The platform is built from reusable Python modules and a FastAPI application. Results are written to request- or scene-specific output directories with structured metadata for downstream applications and frontend integration.
 
-The pipeline is being developed as the processing component of the AFROSAT platform. Its outputs are intended to support downstream applications and integration with a FastAPI backend.
 
-The current workflow supports these image products:
+The platform is designed around reusable Python processing modules, with FastAPI providing an interface for submitting requests and accessing results.
 
-- **RGB composite:** A three-band red, green and blue surface-reflectance composite.
-- **False-colour infrared composite:** NIR displayed as red, red displayed as green, and green displayed as blue.
-- **NDVI:** The Normalized Difference Vegetation Index calculated from red and near-infrared surface reflectance.
+## 2. Architecture
 
-Each successful product is exported as a Cloud Optimized GeoTIFF (COG). Lightweight PNG previews are generated for RGB, false-colour infrared, and NDWI when valid pixels are available. Outputs also include masking statistics and run metadata.
-
-## 2. Core Features
-
-### AOI Selection
-
-The pipeline supports two AOI input methods.
-
-**Administrative boundaries:** Users can select a country and administrative area from the available FieldMaps GeoParquet data. The current interface supports administrative levels 1, 2 and 3, such as counties, sub-counties and wards.
-
-**Coordinate-based AOI:** Users provide latitude, longitude and a radius in kilometres. The script creates a geographic bounding box around the supplied coordinates.
-
-The AOI is passed to the STAC search and used to constrain the satellite data loading and processing workflow.
-
-### Sentinel-2 Data Access
-
-The pipeline connects to the Earth Search STAC API:
-
-`https://earth-search.aws.element84.com/v1`
-
-It searches Sentinel-2 Level-2A imagery using:
-
-- AOI geometry
-- Selected year and month
-- Maximum scene cloud-cover threshold
-
-The application reports the matching scene IDs and cloud-cover percentages. It selects a low-cloud scene as a reference while retaining the matching scenes for temporal compositing.
-
-Satellite assets are accessed using `odc-stac`, with unsigned S3 access configured for public cloud-hosted data.
-
-### Temporal Compositing
-
-The current interface supports monthly composites using either:
-
-- **Median:** Calculates the temporal median for each pixel, reducing the influence of outlying observations.
-- **Mean:** Calculates the temporal mean for each pixel.
-
-The selected composite method is applied after cloud and invalid-pixel masking.
-
-### Reflectance Processing
-
-The optical bands used are:
-
-| Output band | Sentinel-2 band |
-|---|---|
-| Red | B04 |
-| Green | B03 |
-| Blue | B02 |
-| Near-infrared | B08 |
-
-The pipeline converts source digital numbers to floating-point surface reflectance using the configured scale factor. The offset treatment is conditional on the Earth Search BOA-offset flag.
-
-**Radiometric validation remains important:** the actual source pixel convention must be confirmed before the conversion is considered fully verified. The source metadata can retain scale and offset fields even when an offset has already been applied to pixel values. The pipeline must avoid both omitting the required correction and applying it twice.
-
-### SCL Cloud and Invalid-Pixel Masking
-
-The Sentinel-2 Scene Classification Layer is used to exclude observations classified as:
-
-`0, 1, 2, 3, 7, 8, 9, 10, 11`
-
-The retained classes are:
-
-- Class 4: Vegetation
-- Class 5: Non-vegetated land
-- Class 6: Water
-
-Class 2 is excluded to reduce cast-shadow contamination. Class 7 is excluded because it represents unclassified pixels and can include uncertain surface conditions. SCL class descriptions should be consistent with the processing baseline of the source scenes.
-
-The masking module checks SCL alignment against the spectral bands using dimensions, coordinates, CRS and spatial transform where available.
-
-The workflow also calculates:
-
-- Eligible observations
-- Observations retained after masking
-- Observations rejected by SCL
-- Percentage of observations rejected
-- Valid observation count per pixel
-
-A `valid_observation_count.tif` raster is generated when the input contains a time dimension and the count export completes successfully.
-
-### RGB, False-Colour and NDVI Products
-
-**RGB** uses the red, green and blue bands in the expected order and retains floating-point reflectance values in the exported raster.
-
-**False-colour infrared** maps Sentinel-2 NIR (B08) to the red display channel, red (B04) to green, and green (B03) to blue. This highlights vegetation in red tones. The exported three-band raster and preview use this same channel order.
-
-**NDVI** is calculated using:
-
-\[
-NDVI = \frac{NIR - Red}{NIR + Red}
-\]
-
-The current `calculate_ndvi()` implementation expects already-scaled surface reflectance by default. It does not apply another scale factor or offset when called with its default parameters. It masks non-positive input reflectance and near-zero denominators and does not clip the resulting NDVI values.
-
-### Previews
-
-The application generates PNG previews for RGB and false-colour infrared products. The FastAPI integration also generates a display-only NDWI preview with a fixed colour scale and legend.
-
-It also generates before-masking and after-masking RGB previews using shared display-stretch limits, enabling a more consistent visual comparison of the masking effect.
-
-Preview generation is being optimised by downsampling imagery for display. This must not reduce the spatial resolution of the exported scientific COG products.
-
-### Cloud Optimized GeoTIFF Export
-
-Requested products are exported as Cloud Optimized GeoTIFFs using the project's reusable export module.
-
-The export workflow preserves spatial reference information and defines NoData values. Current RGB and NDVI validation results have passed strict `rio-cogeo` checks, including checks for tiling, CRS, data types, NoData, valid pixels and spatial-grid alignment.
-
-Validation should be rerun against the latest exported files after pipeline changes.
-
-### Metadata and Processing Statistics
-
-The reusable metadata module records information about the processing run, including:
-
-- Input parameters and AOI geometry
-- Date range and cloud-cover threshold
-- Source scene identifiers and acquisition details
-- Composite method and requested product
-- Raster CRS, dimensions, bounds and resolution
-- Data types, NoData values and valid-pixel statistics
-- Output paths and file checksums, where available
-- Preview and valid-observation-count raster references
-
-The main processing script also creates a masking comparison report containing the before- and after-masking grid details, preview references, and RGB band statistics.
-
-The masking comparison is intended to be included in `metadata.json` so downstream applications can consume the processing metadata through one manifest. Confirm that the metadata module accepts and serialises the `masking_comparison` argument before considering that integration complete.
-
-## 3. Processing Workflow
-
-The current workflow is:
-
-1. Collect and validate AOI selection and processing inputs.
-2. Construct the AOI geometry.
-3. Connect to the Earth Search STAC API.
-4. Search Sentinel-2 scenes and filter by cloud cover.
-5. Select a reference scene and load matching imagery.
-6. Inspect source metadata and convert optical bands to surface reflectance.
-7. Generate the before-masking RGB preview.
-8. Validate SCL alignment and apply the SCL mask.
-9. Calculate masking statistics and export the valid-observation-count raster.
-10. Generate the masked temporal composite.
-11. Generate the after-masking preview and compare spatial grids and band statistics.
-12. Calculate the requested RGB, false-colour infrared or NDVI product.
-13. Export the product as a COG.
-14. Generate the product preview and output-pixel quality report.
-15. Generate and save processing metadata.
-
-The interactive interface requests one product per run.
-
-## 4. Project Structure
-
-The main components are organised as follows:
+The platform separates request handling, source-specific processing and output validation.
 
 ```text
-eo-platform/
-├── notebooks/
-│   └── aoi_test.py
-├── src/
-│   └── eo/
-│       ├── aoi.py
-│       ├── stac.py
-│       ├── sentinel2.py
-│       ├── composites.py
-│       ├── masking.py
-│       ├── indices.py
-│       ├── processor.py
-│       ├── export.py
-│       └── metadata.py
-├── tests/
-│   └── validate_outputs.py
-├── outputs/
-│   ├── rgb.tif
-│   ├── ndvi.tif
-│   ├── rgb_preview.png
-│   ├── ndvi_preview.png
-│   ├── rgb_preview_before_masking.png
-│   ├── rgb_preview_after_masking.png
-│   ├── valid_observation_count.tif
-│   ├── masking_comparison_stats.json
-│   └── metadata.json
-├── requirements.txt
-└── README.md
+                  User / Client
+                       |
+                       v
+                  FastAPI API
+                       |
+             Request validation
+                       |
+             Source identification
+                 /         \
+                /           \
+               v             v
+       Sentinel-2 Optical   TIVION SAR
+               |             |
+        STAC search       TIFF + XML
+               |             |
+        Scene selection   Inspection /
+               |          Validation /
+        SCL masking       COG conversion
+               |             |
+        Temporal composite   |
+               |             |
+        Spectral products    |
+               \             /
+                \           /
+                 v         v
+             Output assets
+             Metadata and
+             validation results
 ```
 
-Output files depend on the selected processing product and whether the current run completes successfully. The listing above describes the intended output layout; older files in `outputs/` may remain from previous runs.
+The two processing workflows have different input requirements and processing capabilities. They share the same API environment but do not use identical processing methods.
 
-## 5. Main Modules
+## 3. Sentinel-2 Optical Processing
 
-| Module | Responsibility |
+### 3.1 Data access and AOI definition
+
+Sentinel-2 Level-2A imagery is accessed through the Earth Search STAC API:
+
+- STAC endpoint: `https://earth-search.aws.element84.com/v1`
+- Collection: `sentinel-2-c1-l2a`
+- Access: `pystac-client` and `odc-stac`
+- Raster processing: Xarray, Dask and Rasterio
+
+The AOI can be supplied as a WGS84 GeoJSON Polygon or MultiPolygon. The interactive workflow also supports administrative boundaries from FieldMaps GeoParquet data and coordinate-based AOIs.
+
+### 3.2 Processing workflow
+
+1. Validate the AOI, dates, cloud threshold and requested products.
+2. Search the STAC catalogue for Sentinel-2 scenes intersecting the AOI.
+3. Filter scenes by acquisition date and cloud cover.
+4. Select a reference scene and load the required spectral bands.
+5. Apply reflectance scaling and Scene Classification Layer (SCL) masking.
+6. Generate a median or mean temporal composite.
+7. Calculate the requested spectral products.
+8. Process the AOI using single-window or tiled processing.
+9. Export Cloud Optimized GeoTIFFs (COGs).
+10. Generate metadata, validation information and available previews.
+
+The platform searches for scenes once per multi-product request and reuses the selected scene collection across the requested products.
+
+### 3.3 Reflectance scaling and cloud masking
+
+Sentinel-2 Level-2A surface reflectance values require appropriate scale and offset handling.
+
+The implementation uses STAC raster metadata and the applicable BOA offset information. Reflectance scaling must be applied consistently: offsets must neither be omitted when required nor applied twice.
+
+The index calculations expect appropriately scaled reflectance inputs. They do not perform a second scaling operation.
+
+The Scene Classification Layer (SCL) is used to exclude unsuitable observations. The default retained classes are:
+
+| SCL class | Description |
 |---|---|
-| `aoi.py` | Administrative AOI lookup and geometry retrieval |
-| `stac.py` | STAC catalog connection |
-| `sentinel2.py` | Sentinel-2 search, reference-scene selection and data loading |
-| `composites.py` | RGB and false-colour construction, temporal composites and colour previews |
-| `masking.py` | SCL masking, alignment checks and masking statistics |
-| `indices.py` | NDVI calculation |
-| `processor.py` | Dispatches the requested RGB, false-colour or NDVI process |
-| `export.py` | Raster product and COG export |
-| `metadata.py` | Metadata generation and JSON saving |
-| `notebooks/aoi_test.py` | Interactive end-to-end processing workflow |
-| `tests/validate_outputs.py` | Raster and COG validation |
+| 4 | Vegetation |
+| 5 | Non-vegetated land |
+| 6 | Water |
 
-## 6. Running the Pipeline
+Other classes, including cloud, cirrus, cloud shadow, saturated and defective pixels, are excluded by default.
 
-Activate the Python virtual environment and run the script from the project root:
+The masking workflow tracks eligible observations, retained observations, rejected observations and valid observation counts. A valid-observation-count raster can also be generated when requested.
+
+### 3.4 Available optical products
+
+| Product | Bands / calculation | Description |
+|---|---|---|
+| RGB | B04, B03, B02 | Natural-colour composite |
+| FALSE_COLOR | B08, B04, B03 | NIR false-colour composite |
+| NDVI | `(B08 - B04) / (B08 + B04)` | Vegetation condition |
+| NDWI | `(B03 - B08) / (B03 + B08)` | Water-related spectral response |
+| NDMI | `(B08 - B11) / (B08 + B11)` | Vegetation moisture |
+| NBR | `(B08 - B12) / (B08 + B12)` | Burn severity and vegetation disturbance |
+| NBR2 | `(B11 - B12) / (B11 + B12)` | Moisture and burn-related analysis |
+
+Index calculations mask invalid or unsuitable reflectance values and handle near-zero denominators.
+
+### 3.5 Tiling and raster export
+
+Large AOIs can be processed using spatial tiles to manage memory consumption.
+
+Important processing parameters include:
+
+- `tile_size_m`: target tile size in metres.
+- `processing_mode`: `auto`, `single_window` or `tiled`.
+- `max_window_size_m`: maximum processing window.
+- `max_workers`: parallel processing limit.
+- `tile_retries`: retry attempts for failed tiles.
+- `keep_tiles`: whether intermediate tile outputs are retained.
+
+Final optical products are exported as Cloud Optimized GeoTIFFs. COG validation checks the output structure and raster properties.
+
+## 4. TIVION / AIRSAT-05 SAR Processing 
+
+The TIVION workflow handles AIRSAT-05 SAR imagery supplied as a raster TIFF and associated XML metadata.
+
+Unlike the Sentinel-2 workflow, the current SAR implementation focuses on inspection, validation and preservation of the supplied raster values during COG conversion. It does not yet implement a complete SAR calibration and terrain-correction workflow.
+
+### 4.1 Supported operations
+
+| Operation | Function | Purpose |
+|---|---|---|
+| `inspect` | `inspect_airsat05()` | Read raster and XML metadata and report potential issues |
+| `validate` | `validate_airsat05()` | Check geospatial consistency between raster and XML |
+| `process` | `process_airsat05()` | Convert the supplied SAR raster to a validated COG and generate supporting assets |
+
+Inspection and validation are metadata-oriented operations. They do not modify or reprocess the source raster.
+
+### 4.2 Processing workflow
+
+The processing operation:
+
+1. Validates the input TIFF and XML files.
+2. Extracts the scene identifier and acquisition date.
+3. Preserves copies of the original TIFF and XML.
+4. Converts the raster to Cloud Optimized GeoTIFF.
+5. Generates a grayscale preview and thumbnail.
+6. Creates metadata and a geographic footprint.
+7. Generates a manifest containing asset paths, file sizes and SHA-256 checksums.
+8. Validates the output COG against the source raster.
+
+### 4.3 SAR processing limitations
+
+The current implementation supports the following processing configuration:
+
+- Product: `SAR_INTENSITY`
+- Polarisation: `HH`
+- Speckle filter: `none`
+- Output format: `COG`
+
+The COG conversion preserves the original stored pixel values. Validation compares the source and output pixel values to confirm that conversion has not changed them.
+
+Important scientific limitations:
+
+- Radiometric calibration has not been independently implemented or verified.
+- Terrain correction has not been implemented.
+- The preview uses a display stretch and is not calibrated backscatter.
+- Original zero values are preserved and are not automatically interpreted as NoData.
+- The geographic footprint is derived from raster bounds.
+- Metadata warnings may be returned for missing NoData, calibration information or inconsistencies between the TIFF and XML.
+
+The presence of request-model options for other products, polarisations, speckle filters or georeferencing corrections does not mean those capabilities are implemented.
+
+## 5. FastAPI Interface
+
+Start the API from the project root:
 
 ```bash
-python notebooks/aoi_test.py
+python -m uvicorn api.app:app --reload
 ```
 
-The script prompts for:
+The local service is available at:
 
-1. Administrative or coordinate-based AOI
-2. AOI parameters
-3. Processing year and month
-4. Composite method (`median` or `mean`)
-5. Maximum scene cloud cover (0–100%)
-6. Product (for example, `RGB`, `FALSE_COLOR` or `NDVI`)
-
-The script derives the date range from the selected month. Arbitrary start and end dates are not currently requested by this interface.
-
-## 7. Validation
-
-Run the output validator with:
-
-```bash
-python tests/validate_outputs.py
+```text
+http://127.0.0.1:8000
 ```
 
-The validator checks the exported RGB and NDVI rasters for COG compliance and basic raster integrity. It also checks CRS, dimensions, bounds, resolution, grid alignment and AOI coverage where supported by the validation manifest.
+Interactive API documentation:
 
-A successful validator run confirms the checks reported by the validator for those specific files. It does not, by itself, establish that the reflectance conversion is scientifically correct or that the SCL mask is radiometrically appropriate.
-
-## 8. Performance Considerations
-
-The pipeline uses Xarray, Dask and `odc-stac` for working with cloud-hosted raster data. Large AOIs can require substantial I/O, memory and computation, particularly during temporal compositing, masking statistics, previews and raster export.
-
-Current optimisation priorities include:
-
-- Avoid repeated full-array `.compute()` and `.values` operations.
-- Downsample previews without reducing the resolution of scientific output products.
-- Calculate raster statistics in blocks or windows where possible.
-- Benchmark Dask chunk sizes against available system memory.
-- Consider spatial tiling and windowed processing for county-scale and larger AOIs.
-- Preserve masking, metadata and export validation when optimising performance.
-
-## 9. Current Development Priorities
-
-The main remaining verification and development tasks are:
-
-1. Confirm the Sentinel-2 source offset convention and test reflectance conversion.
-2. Add automated tests for reflectance calculations, NDVI, zero denominators and NaN inputs.
-3. Complete the before/after masking statistics and validate `valid_observation_count.tif`.
-4. Confirm that the current metadata implementation includes all masking comparison fields.
-5. Investigate the outstanding Rasterio georeferencing warning and verify SCL alignment on the actual data grid.
-6. Confirm successful RGB and NDVI runs after the preview optimisation changes.
-7. Improve memory efficiency and error handling for large AOIs.
-8. Make the full processing workflow callable through a reusable function suitable for backend integration.
-
-## 10. Intended Integration
-
-The pipeline is designed to provide a repeatable processing workflow that accepts AOI and processing parameters and returns georeferenced raster products together with previews and metadata.
-
-The intended integration is with the AFROSAT FastAPI backend, which can use generated COGs and metadata manifests to expose EO processing results to the frontend. The reusable processing entry points and request validation are implemented in `src/eo/pipeline.py`, `src/eo/api.py`, and `api/app.py`.
-
-## 11. FastAPI Integration Handoff
-
-The FastAPI app is in `api/app.py`. Run locally from the repository root:
-
-```bash
-uvicorn api.app:app --reload
+```text
+http://127.0.0.1:8000/docs
 ```
 
-Endpoints:
-- `GET /health` — lightweight service health.
-- `GET /products` — current supported product codes.
-- `POST /process` — one product (`process`) or multiple products (`products`).
-- `GET /docs` — interactive OpenAPI documentation for local development.
+### 5.1 Available endpoints
 
-### Request payloads
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Check API availability |
+| `/products` | GET | Retrieve registered sources and products |
+| `/process` | POST | Submit Sentinel-2 optical processing requests |
+| `/process/tivion` | POST | Inspect, validate or process TIVION SAR data |
 
-Single product:
+### 5.2 Sentinel-2 request example
+
+The optical endpoint accepts either one product through `process` or multiple products through `products`.
 
 ```json
 {
+  "source": "sentinel2",
   "aoi": {
     "type": "Polygon",
-    "coordinates": [[[36.0, 2.0], [36.1, 2.0], [36.1, 2.1], [36.0, 2.1], [36.0, 2.0]]]
+    "coordinates": [
+      [
+        [36.0, 2.0],
+        [36.1, 2.0],
+        [36.1, 2.1],
+        [36.0, 2.1],
+        [36.0, 2.0]
+      ]
+    ]
   },
-  "start_date": "2026-03-01",
-  "end_date": "2026-03-31",
-  "process": "NDWI",
+  "start_date": "2026-02-01",
+  "end_date": "2026-02-28",
+  "products": ["NDVI", "NDWI", "RGB"],
   "composite_method": "median",
-  "cloud_cover_threshold": 20
+  "cloud_cover_threshold": 20,
+  "tile_size_m": 5000,
+  "processing_mode": "auto"
 }
 ```
 
-Multiple products use the same fields, replacing `process` with a list:
+The request can also include processing controls such as `max_workers`, `tile_retries`, `keep_tiles`, `write_valid_count` and `output_dir`.
+
+### 5.3 Optical/Sentinel 2 response example
+
+The API returns an overall request status and individual product results.
 
 ```json
 {
-  "aoi": {
-    "type": "Polygon",
-    "coordinates": [[[36.0, 2.0], [36.1, 2.0], [36.1, 2.1], [36.0, 2.1], [36.0, 2.0]]]
+  "request_id": "ddfd463984a142ec80f607d5edb55a3f",
+  "status": "completed",
+  "source": "sentinel2",
+  "requested_products": ["NDVI", "NDWI", "RGB"],
+  "completed_products": 3,
+  "failed_products": 0,
+  "scene_count": 1,
+  "products": {
+    "NDVI": {
+      "status": "completed",
+      "product_path": "ndvi.tif",
+      "metadata_path": "ndvi_metadata.json"
+    },
+    "NDWI": {
+      "status": "completed",
+      "product_path": "ndwi.tif",
+      "metadata_path": "ndwi_metadata.json"
+    },
+    "RGB": {
+      "status": "completed",
+      "product_path": "rgb.tif",
+      "metadata_path": "rgb_metadata.json"
+    }
   },
-  "start_date": "2026-03-01",
-  "end_date": "2026-03-31",
-  "products": ["NDWI", "NDVI", "RGB"],
-  "composite_method": "median",
-  "cloud_cover_threshold": 20
+  "errors": []
 }
 ```
 
-Supported products are returned dynamically by `GET /products` and currently include `RGB`, `FALSE_COLOR`, `NDVI`, `NDWI`, `NDMI`, `NBR`, and `NBR2`. Composite methods are `median` and `mean`. AOI must be a valid GeoJSON Polygon or MultiPolygon in WGS84 longitude/latitude.
+Possible overall statuses are:
 
-### Response contract
+- `completed`: all requested products completed.
+- `partial_success`: some products completed and others failed.
+- `failed`: the request could not produce a successful product.
 
-Both single-product and multi-product requests return the same top-level shape. A single-product request still includes its product in `products` and also returns `process` as a convenience alias.
+The API also returns structured errors, including `NO_SCENES_FOUND`, `NO_VALID_PIXELS`, `TILE_PROCESSING_FAILED` and `GDAL_TOOLS_MISSING`.
+
+### 5.4 TIVION/SAR request example
+
+The SAR endpoint requires an input TIFF and its associated XML metadata file.
+
+```json
+{
+  "input_file": "/path/to/airsat05_scene.tif",
+  "metadata_file": "/path/to/airsat05_scene.xml",
+  "operation": "process",
+  "product": "SAR_INTENSITY",
+  "polarisation": "HH",
+  "speckle_filter": "none",
+  "georeferencing": "inspect",
+  "output_format": "COG"
+}
+```
+
+The currently implemented processing combination is `SAR_INTENSITY`, `HH`, no speckle filter and COG output. Unsupported processing options are rejected rather than silently applied.
+
+Example successful response:
 
 ```json
 {
   "status": "completed",
-  "request_id": "generated-request-id",
-  "request_output_dir": "local-output-location",
-  "request_metadata_path": "local-output-location/request_metadata.json",
-  "requested_products": ["NDWI"],
-  "completed_products": 1,
-  "failed_products": 0,
-  "products": {
-    "NDWI": {
-      "status": "completed",
-      "process": "NDWI",
-      "product_path": "local-output-location/NDWI/ndwi.tif",
-      "metadata_path": "local-output-location/NDWI/metadata.json",
-      "manifest_path": "local-output-location/NDWI/tiles/ndwi_run/tile_manifest.json",
-      "valid_count_path": "local-output-location/NDWI/valid_observation_count.tif",
-      "preview_path": "local-output-location/NDWI/ndwi_preview.png",
-      "frontend": {
-        "product_url": "/outputs/...",
-        "metadata_url": "/outputs/...",
-        "manifest_url": "/outputs/...",
-        "valid_count_url": "/outputs/...",
-        "preview_url": "/outputs/...",
-        "visualization": {
-          "type": "singleband-pseudocolor",
-          "band": 1,
-          "minimum": -1.0,
-          "maximum": 1.0,
-          "units": "unitless"
-        }
-      }
-    }
+  "source": "tivion",
+  "product": "SAR_INTENSITY",
+  "polarisation": "HH",
+  "output_directory": "outputs/tivion/SCENE_ID/2026-10-28",
+  "assets": {
+    "sar_hh_cog": "processed/sar_hh_cog.tif",
+    "sar_hh_preview": "processed/sar_hh_preview.jpg",
+    "sar_hh_thumbnail": "processed/sar_hh_thumbnail.jpg",
+    "metadata": "metadata/metadata.json",
+    "footprint": "metadata/footprint.geojson",
+    "manifest": "metadata/manifest.json"
   },
-  "errors": [],
-  "frontend": {
-    "request_metadata_url": "/outputs/..."
+  "validation": {
+    "pixel_values_identical": true
   }
 }
 ```
 
-The example paths and request ID above are illustrative, not actual outputs. Optional output URLs may be `null` if a file is absent or outside the local `outputs/` directory. For `NDWI`, `preview_url` points to a display-only PNG with a fixed -1 to +1 colour scale and legend. The scientific `ndwi.tif` COG is not colour-stretched or modified.
+## 6. Output Structure and Metadata
 
-`request_metadata.json` stores product output references relative to the request folder, for example `NDWI/ndwi.tif`, rather than absolute machine-specific paths. The per-product `metadata.json` and tile manifest also use portable relative paths where supported.
+### 6.1 Sentinel-2 outputs
 
-### Status and frontend handling
+Each optical request receives a separate output directory.
 
-- `completed`: all requested products completed and contain valid output pixels.
-- `partial_success`: at least one product completed and at least one failed.
-- `failed`: no requested product completed.
-- Product errors include codes such as `INVALID_REQUEST`, `NO_SCENES_FOUND`, `NO_VALID_PIXELS`, `TILE_PROCESSING_FAILED`, `GDAL_TOOLS_MISSING`, and `PROCESSING_FAILED`.
+```text
+outputs/
+└── YYYYMMDD_YYYYMMDD_request-XXXXXXXX/
+    ├── request_metadata.json
+    ├── NDVI/
+    │   ├── ndvi.tif
+    │   └── ndvi_metadata.json
+    ├── NDWI/
+    │   ├── ndwi.tif
+    │   └── ndwi_metadata.json
+    └── RGB/
+        ├── rgb.tif
+        └── rgb_metadata.json
+```
 
-Frontend clients should use `products[PRODUCT].frontend.product_url` to access the scientific COG and `preview_url` for quick display. Use `metadata_url` for raster metadata, `manifest_url` for tile-level processing details, and `valid_count_url` when available. NDWI styling is display-only; use the COG values for analysis and any calculations.
+Additional files, such as previews, valid-observation-count rasters, tile manifests and intermediate tiles, depend on the processing configuration and successful completion of the workflow.
 
-### Deployment boundary
+`request_metadata.json` provides a request-level record of the processing operation, while individual product metadata files describe the corresponding outputs.
 
-The `/outputs` static-file mount is for local development and is not a durable Cloud Run storage solution. In deployment, the platform integration should translate these relative references to the configured object-storage URLs and register metadata/status in the existing platform services. GCS upload, PostGIS registration, job orchestration/status, and frontend delivery remain outside this EO-processing package and are not duplicated here. The pipeline returns paths and structured metadata; a deployment-specific storage adapter is responsible for turning those references into durable cloud URLs.
+### 6.2 TIVION outputs
 
-### Validation note
+```text
+outputs/
+└── tivion/
+    └── SCENE_ID/
+        └── ACQUISITION_DATE/
+            ├── source/
+            │   └── original.tiff
+            ├── processed/
+            │   ├── sar_hh_cog.tif
+            │   ├── sar_hh_preview.jpg
+            │   └── sar_hh_thumbnail.jpg
+            └── metadata/
+                ├── original.meta.xml
+                ├── metadata.json
+                ├── footprint.geojson
+                └── manifest.json
+```
 
-A product is not considered successful when its exported mosaic contains no finite, unmasked pixels. All-NaN warnings can occur for pixels masked in every observation; those are expected locally, but the tile and final mosaic are now checked so an entirely empty product is returned as an error instead of a false success. PySTAC warnings should be evaluated using the full warning text and the affected item/asset; the archive provided for this handoff does not include a captured runtime warning log, so their exact origin cannot be confirmed from source alone.
+The SAR manifest records the generated assets, relative paths, file sizes, SHA-256 checksums and generation time.
+
+## 7. Installation and Usage
+
+### 7.1 Environment setup
+
+The project uses Python 3.12 or later.
+
+From the project root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install the project dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+Check the environment:
+
+```bash
+python -m pip check
+```
+
+### 7.2 Run the API
+
+```bash
+python -m uvicorn api.app:app --reload
+```
+
+Open the interactive documentation at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+### 7.3 Run tests
+
+```bash
+python -m pytest -q
+```
+
+The latest reported test run completed with:
+
+```text
+49 passed, 9 warnings
+```
+
+This is the last reported test result, not a guarantee of the result in a future checkout.
+
+## 8. Quality Assurance and Validation
+
+Quality assurance is performed at both the processing and output levels.
+
+**Optical validation includes:**
+
+- AOI geometry and coordinate reference system checks.
+- Date range and cloud-cover validation.
+- STAC scene availability checks.
+- SCL masking and valid-observation checks.
+- Raster dimensions, CRS, bounds, resolution and NoData inspection.
+- COG structural validation.
+- Product metadata and output-path verification.
+- Tile-level processing and failure reporting.
+
+**SAR validation includes:**
+
+- TIFF and XML dimension consistency.
+- CRS and affine transform checks.
+- Raster bounds compared with the XML footprint.
+- Geographic coordinate range checks.
+- Calibration and NoData warnings.
+- COG structure inspection.
+- Pixel-by-pixel comparison between the original raster and converted COG.
+
+A successful COG conversion does not establish that the source data are radiometrically calibrated or terrain corrected. These are separate scientific processing requirements.
+
+Run the complete test suite using:
+
+```bash
+python -m pytest -q
+```
+
+## 9. Performance and Reliability
+
+The optical workflow uses Xarray and Dask for raster processing and supports tiled processing for larger AOIs.
+
+Processing behaviour can be adjusted through tile size, processing mode, worker count, maximum window size and retry settings.
+
+For larger AOIs, tiled processing can reduce memory pressure, although smaller tiles may increase processing overhead. The appropriate tile size depends on AOI size, available memory, scene count and processing requirements.
+
+The API records individual product outcomes, allowing a multi-product request to return `partial_success` when some products fail.
+
+Where available, tile manifests and intermediate outputs support investigation and recovery of failed processing runs.
+
+AOI clipping, output dimensions and the final raster footprint should be checked against the requested AOI during quality assurance. Tiling alone does not guarantee that the final output footprint matches the AOI.
+
+## 10. Project Structure
+
+```text
+eo-platform/
+├── api/
+│   └── app.py
+├── src/
+│   └── eo/
+│       ├── api.py
+│       ├── registry.py
+│       ├── pipeline.py
+│       ├── tiled_pipeline.py
+│       ├── processor.py
+│       ├── indices.py
+│       ├── tivion/
+│       │   ├── processor.py
+│       │   └── inspection.py
+│       └── ...
+├── notebooks/
+│   └── aoi_test.py
+├── tests/
+├── outputs/
+├── pyproject.toml
+├── pytest.ini
+└── README.md
+```
+
+The main responsibilities are:
+
+| Module | Responsibility |
+|---|---|
+| `api/app.py` | FastAPI application and request models |
+| `src/eo/api.py` | Optical multi-product request orchestration |
+| `src/eo/registry.py` | Source and product registration |
+| `src/eo/pipeline.py` | Optical product processing entry point |
+| `src/eo/tiled_pipeline.py` | Optical AOI tiling and processing |
+| `src/eo/indices.py` | Spectral index calculations |
+| `src/eo/tivion/processor.py` | SAR COG conversion and asset generation |
+| `src/eo/tivion/inspection.py` | SAR inspection and geospatial validation |
+| `tests/` | Automated tests |
+
+## 11. Current Limitations and Development Priorities
+
+The platform has working optical and SAR workflows, but several areas require further development and verification.
+
+**Optical priorities**
+
+- Verify reflectance scale and offset handling against the source STAC metadata and pixel-value convention.
+- Confirm that final raster footprints and dimensions correctly represent the requested AOI.
+- Continue validating SCL masking and valid-observation statistics.
+- Improve performance for large AOIs and multi-product requests.
+- Continue testing tile failure recovery and output consistency.
+
+**SAR priorities**
+
+- Implement and validate radiometric calibration.
+- Implement terrain correction where supported by the source data and metadata.
+- Extend support for additional polarisations and SAR products.
+- Implement and validate speckle filtering.
+- Improve geospatial correction and validation capabilities.
+
+**Registry consistency**
+
+The current `src/eo/registry.py` registers TIVION as `implemented=False` with no products, even though the `/process/tivion` endpoint and SAR processing modules are implemented. The registry should be updated so that source discovery and product reporting accurately reflect the available SAR functionality.
+
+Landsat processing is also registered as planned but is not yet implemented.
+
+---
+
+**Project:** AFROSAT Earth Observation Processing Platform
+
+**Primary technologies:** Python, FastAPI, STAC, Sentinel-2, AIRSAT-05 SAR, Xarray, Dask, Rasterio, GeoPandas and Cloud Optimized GeoTIFFs (COGs).

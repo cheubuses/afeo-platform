@@ -1,4 +1,6 @@
+# Sentinel-2 optical processing
 pystac-client
+pystac
 odc-stac
 rioxarray
 xarray
@@ -8,9 +10,16 @@ numpy
 pandas
 matplotlib
 shapely
-pystac
 requests
 Pillow
 
+# FastAPI service and TIVION/AIRSAT-05 SAR processing
+fastapi
+uvicorn
+pydantic
+
+# Cloud Optimized GeoTIFF
 rio-cogeo==5.4.2
+
+# Testing
 pytest==8.4.2

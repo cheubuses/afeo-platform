@@ -1,0 +1,16 @@
+pystac-client
+odc-stac
+rioxarray
+xarray
+dask
+rasterio
+numpy
+pandas
+matplotlib
+shapely
+pystac
+requests
+Pillow
+
+rio-cogeo==5.4.2
+pytest==8.4.2
