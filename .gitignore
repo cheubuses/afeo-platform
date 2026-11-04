@@ -16,3 +16,16 @@ outputs/
 .env
 .env.*
 *.egg-info/
+
+# Large geospatial data and generated imagery
+*.tif
+*.tiff
+*.jp2
+*.vrt
+*.nc
+*.h5
+*.hdf5
+
+# Generated imagery directories
+imagery/
+outputs/
