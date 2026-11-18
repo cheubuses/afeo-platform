@@ -832,6 +832,20 @@ def process_airsat05(
             "gamma0_available": False,
             "beta0_available": False,
         },
+        "limitations": [
+            "The product is L2 GEC (Geocoded Ellipsoid Corrected), "
+            "not terrain corrected (GTC).",
+            "Stored pixel values are linearly quantized SAR amplitude "
+            "digital numbers (DN), not decibels (dB).",
+            "Calibrated sigma0, gamma0 and beta0 backscatter coefficients "
+            "have not been established for this product.",
+            "The scientific COG preserves source raster pixel values "
+            "and does not apply additional radiometric calibration.",
+            "Zero-valued pixels are retained in the scientific product. "
+            "The separate map COG uses an internal display mask that "
+            "treats zero-valued pixels as transparent; this is not a "
+            "scientific NoData assignment."
+        ],
         "footprint_information": {
             "raster_extent_available": True,
             "vendor_scene_footprint_available": True,
@@ -869,20 +883,6 @@ def process_airsat05(
                 "scientific NoData assignment."
             ),
         },
-        "limitations": [
-            (
-                "L2 product level alone does not establish "
-                "radiometric calibration or terrain correction."
-            ),
-            (
-                "Vendor documentation is required to establish "
-                "the physical meaning of the stored pixel values."
-            ),
-            (
-                "COG creation is a lossless format conversion, "
-                "not additional SAR calibration."
-            ),
-        ],
     }
 
     metadata_path.write_text(
@@ -945,6 +945,7 @@ def process_airsat05(
         },
         "validation": {
             "cog": cog_validation,
+            "map_cog": map_cog_validation,
             "pixel_values_identical": True,
         },
     }
