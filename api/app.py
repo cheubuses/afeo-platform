@@ -277,11 +277,12 @@ def supported_products(source: str = "sentinel2"):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return {
-        "source": config.name,
-        "implemented": config.implemented,
-        "description": config.description,
-        "products": list(get_supported_products(config.name)),
-    }
+    "source": config.name,
+    "implemented": config.implemented,
+    "generic_pipeline": config.generic_pipeline,
+    "description": config.description,
+    "products": list(get_supported_products(config.name)),
+}
 
 
 @app.post("/process", tags=["Sentinel-2"])

@@ -399,12 +399,12 @@ def test_request_metadata_uses_relative_product_paths(
     assert str(request_dir) not in json.dumps(saved)
     
 
-def test_unimplemented_source_does_not_search_sentinel2(
+def test_dedicated_source_does_not_enter_generic_pipeline(
     valid_request, monkeypatch
 ):
     def fail_search(*args, **kwargs):
         raise AssertionError(
-            "Sentinel-2 search must not run for an unimplemented source."
+            "Sentinel-2 search must not run for a dedicated SAR source."
         )
 
     monkeypatch.setattr(api, "search_sentinel2", fail_search)
@@ -417,4 +417,7 @@ def test_unimplemented_source_does_not_search_sentinel2(
     result = run_processing(**request)
 
     assert result["status"] == "failed"
-    assert result["errors"][0]["code"] == "SOURCE_NOT_IMPLEMENTED"
+    assert (
+        result["errors"][0]["code"]
+        == "SOURCE_NOT_SUPPORTED_BY_GENERIC_PIPELINE"
+    )

@@ -12,6 +12,8 @@ def test_sentinel2_is_registered_and_implemented():
     config = get_source_config("sentinel2")
 
     assert config.implemented is True
+    assert config.generic_pipeline is True
+
     assert set(get_supported_products("sentinel2")) == {
         "RGB",
         "FALSE_COLOR",
@@ -23,12 +25,22 @@ def test_sentinel2_is_registered_and_implemented():
     }
 
 
-@pytest.mark.parametrize("source", ["landsat", "tivion"])
-def test_future_sources_are_registered_but_not_implemented(source):
-    config = get_source_config(source)
+def test_tivion_is_implemented_with_dedicated_pipeline():
+    config = get_source_config("tivion")
+
+    assert config.implemented is True
+    assert config.generic_pipeline is False
+
+    assert get_supported_products("tivion") == {
+        "SAR_INTENSITY": "sar_hh_cog.tif"
+    }
+
+
+def test_landsat_is_registered_but_not_implemented():
+    config = get_source_config("landsat")
 
     assert config.implemented is False
-    assert get_supported_products(source) == {}
+    assert get_supported_products("landsat") == {}
 
 
 def test_source_names_are_case_insensitive():

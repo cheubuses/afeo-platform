@@ -11,6 +11,7 @@ class SourceConfig:
     products: dict[str, str]
     implemented: bool
     description: str
+    generic_pipeline: bool = True
 
 
 SOURCES = {
@@ -27,18 +28,28 @@ SOURCES = {
         },
         implemented=True,
         description="Sentinel-2 optical imagery processing.",
+        generic_pipeline=True,
     ),
+
     "landsat": SourceConfig(
         name="landsat",
         products={},
         implemented=False,
         description="Landsat processing is planned but not implemented.",
+        generic_pipeline=True,
     ),
+
     "tivion": SourceConfig(
         name="tivion",
-        products={},
-        implemented=False,
-        description="TIVION/AIRSAT-05 SAR processing is planned but not implemented.",
+        products={
+            "SAR_INTENSITY": "sar_hh_cog.tif",
+        },
+        implemented=True,
+        description=(
+            "TIVION/AIRSAT-05 SAR intensity processing "
+            "for validated HH-polarised products."
+        ),
+        generic_pipeline=False,
     ),
 }
 
@@ -49,7 +60,8 @@ def normalize_source(source):
 
 
 def get_source_config(source):
-    """Return the configuration for a registered source."""
+    """Return the configuration for one registered EO source."""
+
     source_name = normalize_source(source)
 
     if source_name not in SOURCES:
@@ -63,5 +75,5 @@ def get_source_config(source):
 
 
 def get_supported_products(source):
-    """Return a copy of the product catalogue for a source."""
+    """Return a copy of the product catalogue."""
     return dict(get_source_config(source).products)

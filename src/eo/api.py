@@ -32,8 +32,15 @@ def _validate_request(
             f"SOURCE_NOT_IMPLEMENTED: Source {source!r} is registered "
             f"but not implemented. {source_config.description}"
         )
-    
-      # Accept either a Shapely geometry or a GeoJSON geometry dictionary.
+
+    if not source_config.generic_pipeline:
+        raise ValueError(
+            f"SOURCE_NOT_SUPPORTED_BY_GENERIC_PIPELINE: "
+            f"Source {source!r} has its own processing workflow. "
+            f"Use the dedicated endpoint for this source."
+        )
+
+    # Accept either a Shapely geometry or a GeoJSON geometry dictionary.
     try:
         geometry = shape(aoi) if isinstance(aoi, dict) else aoi
     except Exception as exc:
@@ -238,11 +245,21 @@ def run_processing(
     except (ValueError, TypeError) as exc:
         message = str(exc)
 
-        error_code = (
-            "SOURCE_NOT_IMPLEMENTED"
-            if "SOURCE_NOT_IMPLEMENTED:" in message
-            else "INVALID_REQUEST"
-        )
+        if "SOURCE_NOT_IMPLEMENTED:" in message:
+            error_code = "SOURCE_NOT_IMPLEMENTED"
+            clean_message = message.replace(
+                "SOURCE_NOT_IMPLEMENTED:", ""
+            ).strip()
+
+        elif "SOURCE_NOT_SUPPORTED_BY_GENERIC_PIPELINE:" in message:
+            error_code = "SOURCE_NOT_SUPPORTED_BY_GENERIC_PIPELINE"
+            clean_message = message.replace(
+                "SOURCE_NOT_SUPPORTED_BY_GENERIC_PIPELINE:", ""
+            ).strip()
+
+        else:
+            error_code = "INVALID_REQUEST"
+            clean_message = message
 
         return {
             "status": "failed",
@@ -251,9 +268,7 @@ def run_processing(
             "errors": [
                 {
                     "code": error_code,
-                    "message": message.replace(
-                        "SOURCE_NOT_IMPLEMENTED:", ""
-                    ).strip(),
+                    "message": clean_message,
                 }
             ],
             "products": {},
