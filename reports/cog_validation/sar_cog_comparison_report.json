@@ -1,0 +1,85 @@
+{
+  "original_file": "imagery/tivion/AS05_006596/2026-10-28/source/original.tiff",
+  "processed_file": "imagery/tivion/AS05_006596/2026-10-28/processed/sar_hh_cog.tif",
+  "checks": {
+    "dimensions_preserved": true,
+    "crs_preserved": true,
+    "geotransform_preserved": true,
+    "data_types_preserved": true,
+    "bounds_preserved": true,
+    "all_grid_properties_preserved": true
+  },
+  "pixel_comparison": {
+    "performed": true,
+    "total_pixels_across_bands": 491520000,
+    "valid_pixels_compared": 491520000,
+    "exactly_equal_pixels": 491520000,
+    "different_pixels": 0,
+    "validity_mask_differences": 0,
+    "max_absolute_difference": 0.0,
+    "mean_absolute_difference": 0.0,
+    "pixel_values_exactly_preserved": true
+  },
+  "original": {
+    "width": 20480,
+    "height": 24000,
+    "bands": 1,
+    "crs": "EPSG:4326",
+    "transform": [
+      4.465567187746126e-06,
+      0.0,
+      36.89305664883051,
+      0.0,
+      -4.4892195973339605e-06,
+      -1.2661303983690733,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "bounds": [
+      36.89305664883051,
+      -1.3738716687050883,
+      36.98451146483555,
+      -1.2661303983690733
+    ],
+    "resolution": [
+      4.465567187746126e-06,
+      4.4892195973339605e-06
+    ],
+    "data_types": [
+      "uint16"
+    ],
+    "nodata": null
+  },
+  "processed": {
+    "width": 20480,
+    "height": 24000,
+    "bands": 1,
+    "crs": "EPSG:4326",
+    "transform": [
+      4.465567187746126e-06,
+      0.0,
+      36.89305664883051,
+      0.0,
+      -4.4892195973339605e-06,
+      -1.2661303983690733,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "bounds": [
+      36.89305664883051,
+      -1.3738716687050883,
+      36.98451146483555,
+      -1.2661303983690733
+    ],
+    "resolution": [
+      4.465567187746126e-06,
+      4.4892195973339605e-06
+    ],
+    "data_types": [
+      "uint16"
+    ],
+    "nodata": null
+  }
+}

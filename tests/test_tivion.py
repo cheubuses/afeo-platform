@@ -30,7 +30,7 @@ def fake_processor(input_file, metadata_file, output_dir):
         "polarisation": "HH",
         "output_directory": output_dir,
         "assets": {
-            "sar_hh_cog": f"{output_dir}/processed/sar_hh_cog.tif"
+            "sar_hh_cog": f"{output_dir}/cog/sar_hh_cog.tif"
         },
         "validation": {
             "pixel_values_identical": True

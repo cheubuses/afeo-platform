@@ -50,12 +50,84 @@ def _xml_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
+def _xml_corner_coordinates(path: Path) -> list[list[float]]:
+    """Extract vendor footprint corners in GeoJSON polygon order."""
+
+    root = ET.parse(path).getroot()
+
+    def local_name(element):
+        return element.tag.split("}")[-1]
+
+    corner_element = next(
+        (
+            element
+            for element in root.iter()
+            if local_name(element) == "corner"
+        ),
+        None,
+    )
+
+    if corner_element is None:
+        raise ValueError("Vendor XML does not contain a corner element.")
+
+    corner_elements = {
+        local_name(element): element
+        for element in list(corner_element)
+    }
+
+    coordinates = []
+
+    # GeoJSON polygon order: top-left, top-right,
+    # bottom-right, bottom-left, and close the ring.
+    for corner_name in (
+        "topLeft",
+        "topRight",
+        "bottomRight",
+        "bottomLeft",
+    ):
+        element = corner_elements.get(corner_name)
+
+        if element is None:
+            raise ValueError(
+                f"Vendor XML is missing the {corner_name} corner."
+            )
+
+        values = {
+            local_name(child): child.text.strip()
+            for child in list(element)
+            if child.text and child.text.strip()
+        }
+
+        try:
+            latitude = float(values["Latitude"])
+            longitude = float(values["Longitude"])
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid latitude/longitude for {corner_name}."
+            ) from exc
+
+        if not (
+            -90 <= latitude <= 90
+            and -180 <= longitude <= 180
+        ):
+            raise ValueError(
+                f"Coordinates out of range for {corner_name}."
+            )
+
+        coordinates.append([longitude, latitude])
+
+    coordinates.append(coordinates[0].copy())
+
+    return coordinates
+
+
+
 def _create_previews(
     source_path: Path,
     preview_path: Path,
     thumbnail_path: Path,
 ) -> dict[str, Any]:
-    """Create display-only grayscale JPEGs from the SAR raster."""
+    """Create display-only grayscale RGBA PNGs with zero background transparent."""
 
     with rasterio.open(source_path) as src:
         maximum_dimension = 2400
@@ -75,14 +147,20 @@ def _create_previews(
             resampling=Resampling.average,
         )
 
+        # Nearest-neighbour sampling provides a separate display mask.
+        # This is a visualization rule, not a scientific NoData assignment.
+        nearest_sample = src.read(
+            1,
+            out_shape=(height, width),
+            resampling=Resampling.nearest,
+        )
+
     values = np.asarray(sample.compressed(), dtype=np.float64)
     values = values[np.isfinite(values)]
 
     if values.size == 0:
         raise ValueError("No valid raster values available for preview.")
 
-    # Zero is not assumed to be NoData.
-    # It is excluded only from display-stretch statistics when present.
     stretch_values = values[values != 0]
 
     if stretch_values.size < 100:
@@ -110,15 +188,21 @@ def _create_previews(
 
     display = (display * 255).round().astype(np.uint8)
 
-    if np.ma.isMaskedArray(sample):
-        display[np.ma.getmaskarray(sample)] = 0
+    source_mask = np.ma.getmaskarray(sample)
 
-    image = Image.fromarray(display).convert("RGB")
+    # Transparent where the nearest source pixel is zero or masked.
+    alpha = np.where(
+        (nearest_sample != 0) & ~source_mask,
+        255,
+        0,
+    ).astype(np.uint8)
+
+    rgba = np.dstack((display, display, display, alpha))
+    image = Image.fromarray(rgba)
 
     image.save(
         preview_path,
-        format="JPEG",
-        quality=92,
+        format="PNG",
         optimize=True,
     )
 
@@ -130,8 +214,7 @@ def _create_previews(
 
     thumbnail.save(
         thumbnail_path,
-        format="JPEG",
-        quality=88,
+        format="PNG",
         optimize=True,
     )
 
@@ -141,11 +224,21 @@ def _create_previews(
         "maximum": float(high),
         "preview_dimensions": list(image.size),
         "thumbnail_dimensions": list(thumbnail.size),
+        "format": "PNG RGBA",
+        "transparency": {
+            "rule": "Nearest sampled source pixel equal to zero is transparent",
+            "alpha_zero": 0,
+            "alpha_opaque": 255,
+            "purpose": "Display-only background transparency",
+            "scientific_nodata_assignment": False,
+        },
         "note": (
-            "Display-only JPEGs. They do not represent calibrated "
-            "backscatter values."
+            "Display-only PNGs with an alpha channel. Zero-valued "
+            "pixels are transparent for visualization only. This "
+            "does not modify source data or assign scientific NoData."
         ),
     }
+
 
 
 def _verify_cog(
@@ -216,6 +309,184 @@ def _verify_cog(
         "overview_levels": overview_levels,
     }
 
+
+
+
+def _create_map_cog(
+    source_path: Path,
+    map_cog_path: Path,
+) -> dict[str, Any]:
+    """Create a visualization COG with an internal zero-value mask.
+
+    The source pixel values are preserved. The internal TIFF mask
+    is a provisional display rule, not a scientific NoData assignment.
+    """
+
+    temporary_path = map_cog_path.with_name(
+        f".{map_cog_path.stem}.mask-source.tif"
+    )
+
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    try:
+        # Build a tiled GeoTIFF carrying an internal validity mask.
+        with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+            with rasterio.open(source_path) as src:
+                profile = src.profile.copy()
+                profile.update(
+                    driver="GTiff",
+                    compress="DEFLATE",
+                    tiled=True,
+                    blockxsize=512,
+                    blockysize=512,
+                    BIGTIFF="IF_SAFER",
+                )
+
+                with rasterio.open(
+                    temporary_path,
+                    "w",
+                    **profile,
+                ) as dst:
+                    for _, window in dst.block_windows(1):
+                        data = src.read(1, window=window)
+
+                        dst.write(
+                            data,
+                            1,
+                            window=window,
+                        )
+
+                        valid_mask = np.where(
+                            data != 0,
+                            255,
+                            0,
+                        ).astype(np.uint8)
+
+                        dst.write_mask(
+                            valid_mask,
+                            window=window,
+                        )
+
+            # Convert the masked GeoTIFF into a cloud-optimized GeoTIFF.
+            rio_copy(
+                temporary_path,
+                map_cog_path,
+                driver="COG",
+                COMPRESS="DEFLATE",
+                PREDICTOR="YES",
+                BLOCKSIZE=512,
+                BIGTIFF="IF_SAFER",
+                OVERVIEWS="AUTO",
+                RESAMPLING="NEAREST",
+                NUM_THREADS="ALL_CPUS",
+            )
+
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+    # Validate georeferencing, pixel values and the internal mask.
+    with rasterio.open(source_path) as original, rasterio.open(
+        map_cog_path
+    ) as mapped:
+
+        structural_checks = {
+            "dimensions_match": (
+                original.width == mapped.width
+                and original.height == mapped.height
+            ),
+            "band_count_matches": original.count == mapped.count,
+            "crs_matches": original.crs == mapped.crs,
+            "transform_matches": (
+                original.transform == mapped.transform
+            ),
+            "dtype_matches": original.dtypes == mapped.dtypes,
+            "nodata_matches": original.nodata == mapped.nodata,
+        }
+
+        if not all(structural_checks.values()):
+            raise RuntimeError(
+                f"Map COG structural validation failed: "
+                f"{structural_checks}"
+            )
+
+        if mapped.driver != "GTiff":
+            raise RuntimeError("Map output is not a GeoTIFF.")
+
+        pixels_match = True
+        mask_matches = True
+        transparent_pixels = 0
+        opaque_pixels = 0
+
+        for _, window in original.block_windows(1):
+            original_data = original.read(
+                1,
+                window=window,
+            )
+
+            mapped_data = mapped.read(
+                1,
+                window=window,
+            )
+
+            mapped_mask = mapped.read_masks(
+                1,
+                window=window,
+            )
+
+            if not np.array_equal(
+                original_data,
+                mapped_data,
+                equal_nan=True,
+            ):
+                pixels_match = False
+                break
+
+            expected_mask = np.where(
+                original_data != 0,
+                255,
+                0,
+            ).astype(np.uint8)
+
+            if not np.array_equal(
+                expected_mask,
+                mapped_mask,
+            ):
+                mask_matches = False
+                break
+
+            transparent_pixels += int(
+                np.count_nonzero(mapped_mask == 0)
+            )
+
+            opaque_pixels += int(
+                np.count_nonzero(mapped_mask == 255)
+            )
+
+        if not pixels_match:
+            raise RuntimeError(
+                "Map COG pixel values differ from the source."
+            )
+
+        if not mask_matches:
+            raise RuntimeError(
+                "Map COG internal mask does not match "
+                "the zero-value transparency rule."
+            )
+
+    return {
+        "created": True,
+        "format": "Cloud Optimized GeoTIFF",
+        "mask_type": "Internal TIFF validity mask",
+        "transparency_rule": "Source pixel value equal to zero is transparent",
+        "scientific_nodata_assignment": False,
+        "structural_checks": structural_checks,
+        "pixel_values_identical": pixels_match,
+        "internal_mask_validated": mask_matches,
+        "transparent_pixels": transparent_pixels,
+        "opaque_pixels": opaque_pixels,
+    }
 
 
 def _tivion_scene_details(xml_path: Path) -> tuple[str, str]:
@@ -291,7 +562,8 @@ def process_airsat05(
         root = (
             project_root
             / "outputs"
-            / "tivion"
+            / "imagery"
+            / "airsat"
             / scene_id
             / acquisition_date
         )
@@ -299,14 +571,15 @@ def process_airsat05(
         root = Path(output_dir).expanduser().resolve()
 
     source_dir = root / "source"
-    processed_dir = root / "processed"
+    cog_dir = root / "cog"
+    previews_dir = root / "previews"
     metadata_dir = root / "metadata"
 
-    for folder in (source_dir, processed_dir, metadata_dir):
+    for folder in (source_dir, cog_dir, previews_dir, metadata_dir):
         folder.mkdir(parents=True, exist_ok=True)
 
     original_copy = source_dir / "original.tiff"
-    xml_copy = metadata_dir / "original.meta.xml"
+    xml_copy = source_dir / "original.meta.xml"
 
     if source_path != original_copy:
         shutil.copy2(source_path, original_copy)
@@ -314,13 +587,14 @@ def process_airsat05(
     if xml_path != xml_copy:
         shutil.copy2(xml_path, xml_copy)
 
-    cog_path = processed_dir / "sar_hh_cog.tif"
-    preview_path = processed_dir / "sar_hh_preview.jpg"
-    thumbnail_path = processed_dir / "sar_hh_thumbnail.jpg"
+    cog_path = cog_dir / "sar_hh_cog.tif"
+    map_cog_path = cog_dir / "sar_hh_map_cog.tif"
+    preview_path = previews_dir / "sar_hh_preview.png"
+    thumbnail_path = previews_dir / "sar_hh_thumbnail.png"
 
     metadata_path = metadata_dir / "metadata.json"
     footprint_path = metadata_dir / "footprint.geojson"
-    manifest_path = metadata_dir / "manifest.json"
+    manifest_path = root / "manifest.json"
 
     xml_metadata = _xml_metadata(xml_path)
 
@@ -417,15 +691,21 @@ def process_airsat05(
 
         cog_action = "created"
 
+    map_cog_validation = _create_map_cog(
+        source_path,
+        map_cog_path,
+    )
+
     preview_metadata = _create_previews(
         source_path,
         preview_path,
         thumbnail_path,
     )
 
-    # The footprint is derived from the raster's own georeferenced bounds.
-    # XML scene corners are not substituted for raster bounds.
-    ring = [
+    # Keep raster extent and vendor scene footprint separate.
+    # Neither geometry is automatically used as a NoData mask.
+
+    raster_extent_ring = [
         [west, north],
         [east, north],
         [east, south],
@@ -433,20 +713,37 @@ def process_airsat05(
         [west, north],
     ]
 
+    vendor_footprint_ring = _xml_corner_coordinates(xml_path)
+
     footprint = {
         "type": "FeatureCollection",
         "features": [
             {
                 "type": "Feature",
                 "properties": {
+                    "geometry_role": "raster_extent",
                     "source": "GeoTIFF georeferenced bounds",
                     "crs": "EPSG:4326",
                 },
                 "geometry": {
                     "type": "Polygon",
-                    "coordinates": [ring],
+                    "coordinates": [raster_extent_ring],
                 },
-            }
+            },
+            {
+                "type": "Feature",
+                "properties": {
+                    "geometry_role": "vendor_scene_footprint",
+                    "source": "AIRSAT-05 vendor XML corner coordinates",
+                    "crs": "EPSG:4326",
+                    "validation_status": "pending_boundary_validation",
+                    "used_as_nodata_mask": False,
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [vendor_footprint_ring],
+                },
+            },
         ],
     }
 
@@ -464,22 +761,112 @@ def process_airsat05(
         "source": "TIVION",
         "satellite": "AIRSAT-05",
         "polarisation": "HH",
+        "product_id": scene_id,
         "acquisition_date": acquisition_date,
         "source_xml_metadata": xml_metadata,
+        "asset_paths": {
+            "source_original": "source/original.tiff",
+            "source_metadata_xml": "source/original.meta.xml",
+            "sar_hh_cog": "cog/sar_hh_cog.tif",
+            "sar_hh_map_cog": "cog/sar_hh_map_cog.tif",
+            "sar_hh_preview": "previews/sar_hh_preview.png",
+            "sar_hh_thumbnail": "previews/sar_hh_thumbnail.png",
+            "metadata": "metadata/metadata.json",
+            "footprint": "metadata/footprint.geojson",
+            "manifest": "manifest.json",
+        },
         "raster": raster_metadata,
         "cog": cog_validation,
+        "map_cog": map_cog_validation,
         "preview": preview_metadata,
+        "spatial_resolution": {
+            "nominal_resolution_xml_value": (
+                float(xml_metadata["NominalResolution"])
+                if xml_metadata.get("NominalResolution")
+                else None
+            ),
+            "nominal_resolution_xml_interpretation": (
+                "Meaning not independently established. "
+                "Do not interpret this value as ground resolution."
+            ),
+            "vendor_confirmed_nominal_spatial_resolution_m": 0.5,
+            "ground_range_resolution_estimated_m": 0.45,
+            "azimuth_resolution_estimated_m": 0.62,
+            "output_pixel_spacing_m": {
+                "width": (
+                    float(xml_metadata["Widthspace"])
+                    if xml_metadata.get("Widthspace")
+                    else None
+                ),
+                "height": (
+                    float(xml_metadata["Heightspace"])
+                    if xml_metadata.get("Heightspace")
+                    else None
+                ),
+            },
+            "resolution_source": "AIRSAT-05 vendor clarification",
+            "pixel_spacing_source": "AIRSAT-05 vendor XML",
+        },
+        "georeferencing": {
+            "product_level": xml_metadata.get("productLevel"),
+            "correction_level": "GEC (Geocoded Ellipsoid Corrected)",
+            "terrain_correction_applied": False,
+            "output_crs": raster_metadata["crs"],
+            "description": (
+                "Vendor-confirmed systematic geometric correction "
+                "with ellipsoid correction; not terrain corrected."
+            ),
+        },
+        "radiometry": {
+            "stored_values": (
+                "SAR amplitude values, linearly quantized digital numbers"
+            ),
+            "units": "DN",
+            "value_scale": "Linear, not decibels (dB)",
+            "calibration_constant_xml": xml_metadata.get("CalibrationConst"),
+            "radiometric_model_xml": xml_metadata.get("RadiometricModel"),
+            "backscatter_coefficient_calibration": (
+                "Not established as calibrated sigma0, gamma0 or beta0."
+            ),
+            "sigma0_available": False,
+            "gamma0_available": False,
+            "beta0_available": False,
+        },
+        "footprint_information": {
+            "raster_extent_available": True,
+            "vendor_scene_footprint_available": True,
+            "boundary_validation": "Pending",
+            "used_as_nodata_mask": False,
+        },
         "scientific_interpretation": {
             "stored_pixel_values": (
                 "Original stored digital numbers."
             ),
-            "radiometric_calibration": "Not independently verified",
-            "terrain_correction": "Not independently verified",
+            "radiometric_calibration": (
+                "Stored values are linearly quantized amplitude DN. "
+                "Calibration to sigma0, gamma0 or beta0 is not established."
+            ),
+            "terrain_correction": (
+                "Vendor identifies the product as L2 GEC. "
+                "Terrain correction has not been applied."
+            ),
             "zero_values": (
-                "Preserved. Zero is not assumed to mean NoData."
+                "Preserved unchanged. Vendor reports background-filled "
+                "zero values outside valid imaging coverage. No NoData "
+                "mask is applied pending boundary validation."
+            ),
+            "footprint": (
+                "Raster extent and vendor scene footprint are stored "
+                "separately. Boundary validation is pending."
             ),
             "display_values": (
-                "JPEGs use a display-only percentile stretch."
+                "RGBA PNGs use a display-only percentile stretch and transparent zero-valued background pixels."
+            ),
+            "map_cog": (
+                "The separate map COG preserves SAR DN values and uses "
+                "an internal TIFF mask to make zero-valued pixels "
+                "transparent for visualization only. This is not a "
+                "scientific NoData assignment."
             ),
         },
         "limitations": [
@@ -504,10 +891,11 @@ def process_airsat05(
 
     assets = {
         "source_original": "source/original.tiff",
-        "source_metadata_xml": "metadata/original.meta.xml",
-        "sar_hh_cog": "processed/sar_hh_cog.tif",
-        "sar_hh_preview": "processed/sar_hh_preview.jpg",
-        "sar_hh_thumbnail": "processed/sar_hh_thumbnail.jpg",
+        "source_metadata_xml": "source/original.meta.xml",
+        "sar_hh_cog": "cog/sar_hh_cog.tif",
+        "sar_hh_map_cog": "cog/sar_hh_map_cog.tif",
+        "sar_hh_preview": "previews/sar_hh_preview.png",
+        "sar_hh_thumbnail": "previews/sar_hh_thumbnail.png",
         "metadata": "metadata/metadata.json",
         "footprint": "metadata/footprint.geojson",
     }
@@ -541,9 +929,14 @@ def process_airsat05(
         "source": "tivion",
         "product": "SAR_INTENSITY",
         "polarisation": "HH",
+        "product_id": scene_id,
+        "acquisition_date": acquisition_date,
         "output_directory": str(root),
         "assets": {
+            "source_original": str(original_copy),
+            "source_metadata_xml": str(xml_copy),
             "sar_hh_cog": str(cog_path),
+            "sar_hh_map_cog": str(map_cog_path),
             "sar_hh_preview": str(preview_path),
             "sar_hh_thumbnail": str(thumbnail_path),
             "metadata": str(metadata_path),
