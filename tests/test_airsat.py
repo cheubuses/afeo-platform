@@ -1,4 +1,4 @@
-"""Tests for the TIVION/AIRSAT-05 SAR API endpoint."""
+"""Tests for the AIRSAT-05 SAR API endpoint."""
 
 from fastapi.testclient import TestClient
 
@@ -12,7 +12,7 @@ VALID_REQUEST = {
     "operation": "process",
     "input_file": "data/airsat05_sample.tiff",
     "metadata_file": "data/airsat05_sample.xml",
-    "output_dir": "imagery/tivion/test-output",
+    "output_dir": "imagery/airsat/test-output",
     "product": "SAR_INTENSITY",
     "polarisation": "HH",
     "speckle_filter": "none",
@@ -25,12 +25,16 @@ def fake_processor(input_file, metadata_file, output_dir):
     """Return a predictable successful SAR processing result."""
     return {
         "status": "completed",
-        "source": "tivion",
+        "source": "airsat",
         "product": "SAR_INTENSITY",
         "polarisation": "HH",
         "output_directory": output_dir,
         "assets": {
             "sar_hh_cog": f"{output_dir}/cog/sar_hh_cog.tif"
+        },
+        "technical_metadata": {
+            "georeferencing": {"output_crs": "EPSG:4326"},
+            "radiometry": {"units": "DN"},
         },
         "validation": {
             "pixel_values_identical": True
@@ -38,8 +42,8 @@ def fake_processor(input_file, metadata_file, output_dir):
     }
 
 
-def test_tivion_process_calls_sar_processor(monkeypatch):
-    """A valid TIVION request calls the SAR processor."""
+def test_airsat_process_calls_sar_processor(monkeypatch):
+    """A valid AIRSAT-05 request calls the SAR processor."""
     calls = []
 
     def tracked_processor(input_file, metadata_file, output_dir):
@@ -52,12 +56,16 @@ def test_tivion_process_calls_sar_processor(monkeypatch):
         tracked_processor,
     )
 
-    response = client.post("/process/tivion", json=VALID_REQUEST)
+    response = client.post("/process/airsat", json=VALID_REQUEST)
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert response.json()["source"] == "tivion"
+    assert response.json()["source"] == "airsat"
     assert response.json()["validation"]["pixel_values_identical"] is True
+    assert response.json()["technical_metadata"] == {
+        "georeferencing": {"output_crs": "EPSG:4326"},
+        "radiometry": {"units": "DN"},
+    }
 
     assert calls == [
         (
@@ -68,7 +76,7 @@ def test_tivion_process_calls_sar_processor(monkeypatch):
     ]
 
 
-def test_tivion_missing_output_directory_uses_default(monkeypatch):
+def test_airsat_missing_output_directory_uses_default(monkeypatch):
     """A missing output directory is passed to the processor as None."""
     calls = []
 
@@ -95,7 +103,7 @@ def test_tivion_missing_output_directory_uses_default(monkeypatch):
         "output_dir": None,
     }
 
-    response = client.post("/process/tivion", json=request)
+    response = client.post("/process/airsat", json=request)
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -110,33 +118,33 @@ def test_tivion_missing_output_directory_uses_default(monkeypatch):
     ]
 
 
-def test_tivion_unsupported_product_returns_501():
+def test_airsat_unsupported_product_returns_501():
     """BACKSCATTER must not be accepted before implementation."""
     request = {
         **VALID_REQUEST,
         "product": "BACKSCATTER",
     }
 
-    response = client.post("/process/tivion", json=request)
+    response = client.post("/process/airsat", json=request)
 
     assert response.status_code == 501
     assert "not implemented" in response.json()["detail"]
 
 
-def test_tivion_unsupported_speckle_filter_returns_501():
+def test_airsat_unsupported_speckle_filter_returns_501():
     """Unimplemented speckle filters must be rejected."""
     request = {
         **VALID_REQUEST,
         "speckle_filter": "lee",
     }
 
-    response = client.post("/process/tivion", json=request)
+    response = client.post("/process/airsat", json=request)
 
     assert response.status_code == 501
     assert "Speckle filtering" in response.json()["detail"]
 
 
-def test_tivion_missing_input_file_returns_422(monkeypatch):
+def test_airsat_missing_input_file_returns_422(monkeypatch):
     """A missing input file is reported as a client error."""
 
     def missing_file_processor(*args, **kwargs):
@@ -149,7 +157,7 @@ def test_tivion_missing_input_file_returns_422(monkeypatch):
     )
 
     response = client.post(
-        "/process/tivion",
+        "/process/airsat",
         json=VALID_REQUEST,
     )
 

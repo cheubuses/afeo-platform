@@ -20,6 +20,7 @@ dependencies = [
     "pandas",
     "matplotlib",
     "shapely",
+    "pyproj",
     "requests",
     "Pillow",
     "rio-cogeo==5.4.2",

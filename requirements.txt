@@ -10,10 +10,11 @@ numpy
 pandas
 matplotlib
 shapely
+pyproj
 requests
 Pillow
 
-# FastAPI service and TIVION/AIRSAT-05 SAR processing
+# FastAPI service and AIRSAT-05 SAR processing
 fastapi
 uvicorn
 pydantic

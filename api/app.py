@@ -20,8 +20,8 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from eo.api import run_processing
-from eo.tivion.inspection import inspect_airsat05, validate_airsat05
-from eo.tivion.processor import process_airsat05
+from eo.airsat.inspection import inspect_airsat05, validate_airsat05
+from eo.airsat.processor import process_airsat05
 
 
 
@@ -31,7 +31,7 @@ app = FastAPI(
     description=(
         "AFROSAT Earth Observation Processing API. "
         "Provides Sentinel-2 optical processing and a "
-        "TIVION/AIRSAT-05 SAR request interface."
+        "AIRSAT-05 SAR request interface."
     ),
     openapi_tags=[
         {
@@ -39,10 +39,10 @@ app = FastAPI(
             "description": "Operational Sentinel-2 optical image processing.",
         },
         {
-            "name": "TIVION SAR",
+            "name": "AIRSAT SAR",
             "description": (
-                "TIVION/AIRSAT-05 SAR processing options. "
-                "Processing functionality is under development."
+                "AIRSAT-05 SAR inspection, validation and HH intensity COG processing. "
+                "Radiometric calibration and terrain correction are not performed."
             ),
         },
     ],
@@ -153,7 +153,7 @@ class EOProcessRequest(BaseModel):
     """Validated request body for EO processing."""
     source: str = Field(
         default="sentinel2",
-        description="EO data source: sentinel2, landsat or tivion.",
+        description="EO data source: sentinel2, landsat or airsat.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -194,8 +194,8 @@ class EOProcessRequest(BaseModel):
     output_dir: str | None = None
     input_parameters: dict[str, Any] = Field(default_factory=dict)
 
-class TivionProcessRequest(BaseModel):
-    """Request model for TIVION/AIRSAT-05 SAR processing."""
+class AirsatProcessRequest(BaseModel):
+    """Request model for AIRSAT-05 SAR processing."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -209,7 +209,7 @@ class TivionProcessRequest(BaseModel):
     ] | None = Field(
         default=None,
         description=(
-            "TIVION operation. If omitted, the legacy "
+            "AIRSAT-05 operation. If omitted, the legacy "
             "georeferencing setting determines inspect or validate."
         ),
     )
@@ -346,12 +346,12 @@ async def process(request: EOProcessRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     
-@app.post("/process/tivion", tags=["TIVION SAR"])
-async def process_tivion(request: TivionProcessRequest):
+@app.post("/process/airsat", tags=["AIRSAT SAR"])
+async def process_airsat(request: AirsatProcessRequest):
     """
-    Inspect, validate or process TIVION/AIRSAT-05 SAR imagery.
+    Inspect, validate or process AIRSAT-05 SAR imagery.
 
-    TIVION processing is independent of the Sentinel-2 STAC workflow.
+    AIRSAT-05 processing is independent of the Sentinel-2 STAC workflow.
     """
 
     # Preserve the existing inspect/validate behavior when operation
@@ -368,7 +368,7 @@ async def process_tivion(request: TivionProcessRequest):
     if not request.metadata_file:
         raise HTTPException(
             status_code=422,
-            detail="metadata_file is required for TIVION operations.",
+            detail="metadata_file is required for AIRSAT-05 operations.",
         )
 
     if operation == "process":
@@ -443,7 +443,7 @@ async def process_tivion(request: TivionProcessRequest):
         except Exception as exc:
             raise HTTPException(
                 status_code=500,
-                detail=f"TIVION processing failed: {exc}",
+                detail=f"AIRSAT-05 processing failed: {exc}",
             ) from exc
 
     # Inspection and validation operations.

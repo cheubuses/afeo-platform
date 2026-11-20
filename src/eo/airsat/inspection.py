@@ -1,4 +1,4 @@
-"""Metadata-only inspection for TIVION/AIRSAT-05 SAR products."""
+"""Metadata-only inspection for AIRSAT-05 SAR products."""
 
 from __future__ import annotations
 
@@ -245,7 +245,7 @@ def inspect_airsat05(
     return {
         "status": "completed",
         "operation": "inspect",
-        "source": "tivion",
+        "source": "airsat",
         "product": "AIRSAT-05 SAR",
         "files": {
             "raster": raster_path.name,
@@ -465,7 +465,7 @@ def validate_airsat05(
     return {
         "status": status,
         "operation": "validate",
-        "source": "tivion",
+        "source": "airsat",
         "product": "AIRSAT-05 SAR",
         "files": {
             "raster": raster_path.name,

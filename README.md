@@ -1,16 +1,13 @@
 # AFROSAT Earth Observation Processing Platform
 
-# Technical documentation — 4 November 2026.  
+## Technical Documentation — 20 November 2026
 
-1. Project Overview
+## 1. Project Overview
 AFROSAT is a Python-based Earth Observation (EO) processing platform for accessing, processing, validating and managing satellite imagery from multiple sources.
 It currently contains two independent workflows:
 1. Sentinel-2 Optical Processing — accesses Sentinel-2 Level-2A imagery through a SpatioTemporal Asset Catalog (STAC), applies Scene Classification Layer (SCL) masking, builds temporal composites and produces optical indices and image composites.
-2. TIVION/AIRSAT-05 SAR Processing — ingests AIRSAT-05 Synthetic Aperture Radar (SAR) imagery, inspects raster and XML metadata, validates geospatial consistency and generates Cloud Optimized GeoTIFFs (COGs) with supporting metadata and previews.
+2. AIRSAT-05 SAR Processing — ingests AIRSAT-05 Synthetic Aperture Radar (SAR) imagery, inspects raster and XML metadata, validates geospatial consistency and generates Cloud Optimized GeoTIFFs (COGs) with supporting metadata and previews.
 The platform is built from reusable Python modules and a FastAPI application. Results are written to request- or scene-specific output directories with structured metadata for downstream applications and frontend integration.
-
-
-The platform is designed around reusable Python processing modules, with FastAPI providing an interface for submitting requests and accessing results.
 
 ## 2. Architecture
 
@@ -28,7 +25,7 @@ The platform separates request handling, source-specific processing and output v
                  /         \
                 /           \
                v             v
-       Sentinel-2 Optical   TIVION SAR
+       Sentinel-2 Optical   AIRSAT SAR
                |             |
         STAC search       TIFF + XML
                |             |
@@ -126,11 +123,11 @@ Important processing parameters include:
 
 Final optical products are exported as Cloud Optimized GeoTIFFs. COG validation checks the output structure and raster properties.
 
-## 4. TIVION / AIRSAT-05 SAR Processing 
+## 4. AIRSAT-05 SAR Processing
 
-The TIVION workflow handles AIRSAT-05 SAR imagery supplied as a raster TIFF and associated XML metadata.
+The AIRSAT-05 workflow handles AIRSAT-05 SAR imagery supplied as a raster TIFF and associated XML metadata.
 
-Unlike the Sentinel-2 workflow, the current SAR implementation focuses on inspection, validation and preservation of the supplied raster values during COG conversion. It does not yet implement a complete SAR calibration and terrain-correction workflow.
+The AIRSAT workflow supports metadata inspection, geospatial validation, preservation of source pixel values, COG generation and supporting map assets. It does not independently perform radiometric calibration or terrain correction.
 
 ### 4.1 Supported operations
 
@@ -147,43 +144,50 @@ Inspection and validation are metadata-oriented operations. They do not modify o
 The processing operation:
 
 1. Validates the input TIFF and XML files.
-2. Extracts the scene identifier and acquisition date.
+2. Extracts the full vendor product identifier and acquisition date.
 3. Preserves copies of the original TIFF and XML.
-4. Converts the raster to Cloud Optimized GeoTIFF.
-5. Generates a grayscale preview and thumbnail.
-6. Creates metadata and a geographic footprint.
-7. Generates a manifest containing asset paths, file sizes and SHA-256 checksums.
-8. Validates the output COG against the source raster.
+4. Generates a scientific COG while preserving source pixel values.
+5. Generates a map COG with an internal validity mask for zero-valued background pixels.
+6. Creates a display-stretched JPEG preview and thumbnail.
+7. Creates normalized technical metadata and a GeoJSON footprint.
+8. Generates a manifest containing asset paths, file sizes and SHA-256 checksums.
+9. Validates COG structure, pixel values and the map COG validity mask.
+10. Quantitatively compares the raster extent with the vendor scene footprint.
 
-### 4.3 SAR processing limitations
+### 4.3 Technical characteristics and limitations
 
-The current implementation supports the following processing configuration:
+The currently implemented processing configuration is:
 
 - Product: `SAR_INTENSITY`
 - Polarisation: `HH`
 - Speckle filter: `none`
 - Output format: `COG`
 
-The COG conversion preserves the original stored pixel values. Validation compares the source and output pixel values to confirm that conversion has not changed them.
+**Raster and spatial characteristics**
 
-Important scientific limitations:
+- The supplied raster is single-band UInt16 in EPSG:4326.
+- The vendor identifies the product as L2 GEC (Geocoded Ellipsoid Corrected).
+- Vendor-confirmed nominal spatial resolution is 0.5 m.
+- Output pixel spacing is approximately 0.5025935 m in both dimensions.
+- The XML nominal resolution value of 0.135346 is retained without interpreting it as ground resolution.
+- The processor preserves the supplied geographic grid and does not perform additional reprojection or terrain correction.
 
-- Radiometric calibration has not been independently implemented or verified.
-- Terrain correction has not been implemented.
-- The preview uses a display stretch and is not calibrated backscatter.
-- Original zero values are preserved and are not automatically interpreted as NoData.
-- The geographic footprint is derived from raster bounds.
-- Metadata warnings may be returned for missing NoData, calibration information or inconsistencies between the TIFF and XML.
+**Radiometric characteristics**
 
-The presence of request-model options for other products, polarisations, speckle filters or georeferencing corrections does not mean those capabilities are implemented.
+- Stored values represent linear SAR amplitude digital numbers (DN), not decibels.
+- The scientific COG preserves the original stored pixel values.
+- The processor does not establish calibrated sigma0, gamma0 or beta0 products.
+- The XML calibration constant and radiometric model are retained, but their meaning and validity require vendor confirmation.
+- Vendor XML correction flags are reported as metadata; the processor does not independently recalculate or verify those corrections.
+
+**Background pixels, previews and footprints**
+
+- Vendor-confirmed zero-valued background pixels are marked invalid in the map COG's internal validity mask.
+- This mask does not change scientific COG pixel values or assign a scientific NoData value.
+- JPEG previews use a display-only intensity stretch and are not calibrated SAR products.
+- The raster extent and vendor scene footprint are retained separately and quantitatively compared.
 
 ## 5. FastAPI Interface
-
-Start the API from the project root:
-
-```bash
-python -m uvicorn api.app:app --reload
-```
 
 The local service is available at:
 
@@ -204,7 +208,7 @@ http://127.0.0.1:8000/docs
 | `/health` | GET | Check API availability |
 | `/products` | GET | Retrieve registered sources and products |
 | `/process` | POST | Submit Sentinel-2 optical processing requests |
-| `/process/tivion` | POST | Inspect, validate or process TIVION SAR data |
+| `/process/airsat` | POST | Inspect, validate or process AIRSAT SAR data |
 
 ### 5.2 Sentinel-2 request example
 
@@ -237,7 +241,7 @@ The optical endpoint accepts either one product through `process` or multiple pr
 
 The request can also include processing controls such as `max_workers`, `tile_retries`, `keep_tiles`, `write_valid_count` and `output_dir`.
 
-### 5.3 Optical/Sentinel 2 response example
+### 5.3 Sentinel-2 optical response example
 
 The API returns an overall request status and individual product results.
 
@@ -279,14 +283,14 @@ Possible overall statuses are:
 
 The API also returns structured errors, including `NO_SCENES_FOUND`, `NO_VALID_PIXELS`, `TILE_PROCESSING_FAILED` and `GDAL_TOOLS_MISSING`.
 
-### 5.4 TIVION/SAR request example
+### 5.4 AIRSAT-05/SAR request example
 
 The SAR endpoint requires an input TIFF and its associated XML metadata file.
 
 ```json
 {
-  "input_file": "/path/to/airsat05_scene.tif",
-  "metadata_file": "/path/to/airsat05_scene.xml",
+  "input_file": "data/airsat05_sample.tiff",
+  "metadata_file": "data/airsat05_sample.xml",
   "operation": "process",
   "product": "SAR_INTENSITY",
   "polarisation": "HH",
@@ -298,24 +302,56 @@ The SAR endpoint requires an input TIFF and its associated XML metadata file.
 
 The currently implemented processing combination is `SAR_INTENSITY`, `HH`, no speckle filter and COG output. Unsupported processing options are rejected rather than silently applied.
 
+The example abbreviates filesystem paths for readability; the API returns the generated output directory and asset paths for the local execution environment.
+
 Example successful response:
 
 ```json
 {
   "status": "completed",
-  "source": "tivion",
+  "source": "airsat",
   "product": "SAR_INTENSITY",
   "polarisation": "HH",
-  "output_directory": "outputs/tivion/SCENE_ID/2026-10-28",
+  "product_id": "PRODUCT_ID",
+  "acquisition_date": "YYYY-MM-DD",
+  "output_directory": "outputs/imagery/airsat/{product_id}/{acquisition_date}",
+  "technical_metadata": {
+    "spatial_resolution": {
+      "vendor_confirmed_nominal_spatial_resolution_m": 0.5,
+      "output_pixel_spacing_m": {
+        "width": 0.5025935,
+        "height": 0.5025935
+      }
+    },
+    "georeferencing": {
+      "correction_level": "GEC",
+      "terrain_correction_applied": false,
+      "output_crs": "EPSG:4326"
+    },
+    "radiometry": {
+      "units": "DN",
+      "value_scale": "Linear, not decibels (dB)"
+    }
+  },
   "assets": {
-    "sar_hh_cog": "processed/sar_hh_cog.tif",
-    "sar_hh_preview": "processed/sar_hh_preview.jpg",
-    "sar_hh_thumbnail": "processed/sar_hh_thumbnail.jpg",
+    "source_original": "source/original.tiff",
+    "source_metadata_xml": "source/original.meta.xml",
+    "sar_hh_cog": "cog/sar_hh_cog.tif",
+    "sar_hh_map_cog": "cog/sar_hh_map_cog.tif",
+    "sar_hh_preview": "previews/sar_hh_preview.jpg",
+    "sar_hh_thumbnail": "previews/sar_hh_thumbnail.jpg",
     "metadata": "metadata/metadata.json",
     "footprint": "metadata/footprint.geojson",
-    "manifest": "metadata/manifest.json"
+    "manifest": "manifest.json"
   },
   "validation": {
+    "cog": {
+      "pixel_values_identical": true
+    },
+    "map_cog": {
+      "pixel_values_identical": true,
+      "internal_mask_validated": true
+    },
     "pixel_values_identical": true
   }
 }
@@ -346,27 +382,28 @@ Additional files, such as previews, valid-observation-count rasters, tile manife
 
 `request_metadata.json` provides a request-level record of the processing operation, while individual product metadata files describe the corresponding outputs.
 
-### 6.2 TIVION outputs
+### 6.2 AIRSAT-05 outputs
+
+Each AIRSAT product is stored in a directory identified by its full vendor product ID and acquisition date.
 
 ```text
-outputs/
-└── tivion/
-    └── SCENE_ID/
-        └── ACQUISITION_DATE/
-            ├── source/
-            │   └── original.tiff
-            ├── processed/
-            │   ├── sar_hh_cog.tif
-            │   ├── sar_hh_preview.jpg
-            │   └── sar_hh_thumbnail.jpg
-            └── metadata/
-                ├── original.meta.xml
-                ├── metadata.json
-                ├── footprint.geojson
-                └── manifest.json
+outputs/imagery/airsat/{product_id}/{acquisition_date}/
+├── manifest.json
+├── source/
+│   ├── original.tiff
+│   └── original.meta.xml
+├── cog/
+│   ├── sar_hh_cog.tif
+│   └── sar_hh_map_cog.tif
+├── previews/
+│   ├── sar_hh_preview.jpg
+│   └── sar_hh_thumbnail.jpg
+└── metadata/
+    ├── metadata.json
+    └── footprint.geojson
 ```
 
-The SAR manifest records the generated assets, relative paths, file sizes, SHA-256 checksums and generation time.
+The scientific COG preserves source pixel values. The map COG uses an internal validity mask for zero-valued background pixels. The manifest records asset paths, file sizes, SHA-256 checksums and generation time.
 
 ## 7. Installation and Usage
 
@@ -397,28 +434,14 @@ python -m pip check
 ### 7.2 Run the API
 
 ```bash
-python -m uvicorn api.app:app --reload
-```
-
-Open the interactive documentation at:
-
-```text
-http://127.0.0.1:8000/docs
+.venv/bin/uvicorn api.app:app --reload
 ```
 
 ### 7.3 Run tests
 
 ```bash
-python -m pytest -q
+.venv/bin/python -m pytest -q
 ```
-
-The latest reported test run completed with:
-
-```text
-49 passed, 9 warnings
-```
-
-This is the last reported test result, not a guarantee of the result in a future checkout.
 
 ## 8. Quality Assurance and Validation
 
@@ -441,17 +464,11 @@ Quality assurance is performed at both the processing and output levels.
 - CRS and affine transform checks.
 - Raster bounds compared with the XML footprint.
 - Geographic coordinate range checks.
-- Calibration and NoData warnings.
+- Source NoData preservation and map COG validity-mask checks.
 - COG structure inspection.
-- Pixel-by-pixel comparison between the original raster and converted COG.
+- Pixel-by-pixel comparison of source values with the scientific and map COGs.
 
 A successful COG conversion does not establish that the source data are radiometrically calibrated or terrain corrected. These are separate scientific processing requirements.
-
-Run the complete test suite using:
-
-```bash
-python -m pytest -q
-```
 
 ## 9. Performance and Reliability
 
@@ -481,9 +498,10 @@ eo-platform/
 │       ├── tiled_pipeline.py
 │       ├── processor.py
 │       ├── indices.py
-│       ├── tivion/
+│       ├── airsat/
 │       │   ├── processor.py
-│       │   └── inspection.py
+│       │   ├── inspection.py
+│       │   └── footprint.py
 │       └── ...
 ├── notebooks/
 │   └── aoi_test.py
@@ -504,8 +522,9 @@ The main responsibilities are:
 | `src/eo/pipeline.py` | Optical product processing entry point |
 | `src/eo/tiled_pipeline.py` | Optical AOI tiling and processing |
 | `src/eo/indices.py` | Spectral index calculations |
-| `src/eo/tivion/processor.py` | SAR COG conversion and asset generation |
-| `src/eo/tivion/inspection.py` | SAR inspection and geospatial validation |
+| `src/eo/airsat/processor.py` | SAR COG conversion and asset generation |
+| `src/eo/airsat/inspection.py` | SAR inspection and geospatial validation |
+| `src/eo/airsat/footprint.py` | Raster and vendor footprint comparison metrics |
 | `tests/` | Automated tests |
 
 ## 11. Current Limitations and Development Priorities
@@ -522,20 +541,8 @@ The platform has working optical and SAR workflows, but several areas require fu
 
 **SAR priorities**
 
-- Implement and validate radiometric calibration.
+- Establish vendor-supported radiometric calibration and validate its outputs.
 - Implement terrain correction where supported by the source data and metadata.
 - Extend support for additional polarisations and SAR products.
 - Implement and validate speckle filtering.
-- Improve geospatial correction and validation capabilities.
-
-**Registry consistency**
-
-The current `src/eo/registry.py` registers TIVION as `implemented=False` with no products, even though the `/process/tivion` endpoint and SAR processing modules are implemented. The registry should be updated so that source discovery and product reporting accurately reflect the available SAR functionality.
-
-Landsat processing is also registered as planned but is not yet implemented.
-
----
-
-**Project:** AFROSAT Earth Observation Processing Platform
-
-**Primary technologies:** Python, FastAPI, STAC, Sentinel-2, AIRSAT-05 SAR, Xarray, Dask, Rasterio, GeoPandas and Cloud Optimized GeoTIFFs (COGs).
+- Extend footprint and geospatial validation to additional SAR products and acquisition geometries.

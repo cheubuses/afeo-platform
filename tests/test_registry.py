@@ -25,13 +25,13 @@ def test_sentinel2_is_registered_and_implemented():
     }
 
 
-def test_tivion_is_implemented_with_dedicated_pipeline():
-    config = get_source_config("tivion")
+def test_airsat_is_implemented_with_dedicated_pipeline():
+    config = get_source_config("airsat")
 
     assert config.implemented is True
     assert config.generic_pipeline is False
 
-    assert get_supported_products("tivion") == {
+    assert get_supported_products("airsat") == {
         "SAR_INTENSITY": "sar_hh_cog.tif"
     }
 

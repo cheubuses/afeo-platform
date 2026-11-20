@@ -39,14 +39,14 @@ SOURCES = {
         generic_pipeline=True,
     ),
 
-    "tivion": SourceConfig(
-        name="tivion",
+    "airsat": SourceConfig(
+        name="airsat",
         products={
             "SAR_INTENSITY": "sar_hh_cog.tif",
         },
         implemented=True,
         description=(
-            "TIVION/AIRSAT-05 SAR intensity processing "
+            "AIRSAT-05 SAR intensity processing "
             "for validated HH-polarised products."
         ),
         generic_pipeline=False,

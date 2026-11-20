@@ -1,4 +1,4 @@
-"""AIRSAT-05 SAR product generation for TIVION."""
+"""AIRSAT-05 SAR product generation for AIRSAT-05."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.shutil import copy as rio_copy
-from rasterio.warp import transform_bounds
+from eo.airsat.footprint import compare_footprints
 
 
 def _sha256(path: Path) -> str:
@@ -127,11 +127,10 @@ def _create_previews(
     preview_path: Path,
     thumbnail_path: Path,
 ) -> dict[str, Any]:
-    """Create display-only grayscale RGBA PNGs with zero background transparent."""
+    """Create display-only grayscale JPEGs with a black background."""
 
     with rasterio.open(source_path) as src:
         maximum_dimension = 2400
-
         scale = min(
             1.0,
             maximum_dimension / max(src.width, src.height),
@@ -147,8 +146,6 @@ def _create_previews(
             resampling=Resampling.average,
         )
 
-        # Nearest-neighbour sampling provides a separate display mask.
-        # This is a visualization rule, not a scientific NoData assignment.
         nearest_sample = src.read(
             1,
             out_shape=(height, width),
@@ -157,20 +154,18 @@ def _create_previews(
 
     values = np.asarray(sample.compressed(), dtype=np.float64)
     values = values[np.isfinite(values)]
-
-    if values.size == 0:
-        raise ValueError("No valid raster values available for preview.")
-
     stretch_values = values[values != 0]
 
-    if stretch_values.size < 100:
-        stretch_values = values
+    if stretch_values.size == 0:
+        raise ValueError(
+            "No non-zero valid raster values available for preview."
+        )
 
     low, high = np.percentile(stretch_values, [2, 98])
 
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-        low = float(np.min(values))
-        high = float(np.max(values))
+        low = float(np.min(stretch_values))
+        high = float(np.max(stretch_values))
 
     if high <= low:
         high = low + 1.0
@@ -179,30 +174,25 @@ def _create_previews(
         sample.filled(low),
         dtype=np.float64,
     )
-
-    display = np.clip(
-        (display - low) / (high - low),
-        0,
-        1,
-    )
-
+    display = np.clip((display - low) / (high - low), 0, 1)
     display = (display * 255).round().astype(np.uint8)
 
     source_mask = np.ma.getmaskarray(sample)
+    valid_display = (
+        (nearest_sample != 0)
+        & ~source_mask
+        & np.isfinite(nearest_sample)
+    )
 
-    # Transparent where the nearest source pixel is zero or masked.
-    alpha = np.where(
-        (nearest_sample != 0) & ~source_mask,
-        255,
-        0,
-    ).astype(np.uint8)
+    display[~valid_display] = 0
 
-    rgba = np.dstack((display, display, display, alpha))
-    image = Image.fromarray(rgba)
+    rgb = np.dstack((display, display, display))
+    image = Image.fromarray(rgb, mode="RGB")
 
     image.save(
         preview_path,
-        format="PNG",
+        format="JPEG",
+        quality=92,
         optimize=True,
     )
 
@@ -211,10 +201,10 @@ def _create_previews(
         (512, 512),
         Image.Resampling.LANCZOS,
     )
-
     thumbnail.save(
         thumbnail_path,
-        format="PNG",
+        format="JPEG",
+        quality=90,
         optimize=True,
     )
 
@@ -224,21 +214,22 @@ def _create_previews(
         "maximum": float(high),
         "preview_dimensions": list(image.size),
         "thumbnail_dimensions": list(thumbnail.size),
-        "format": "PNG RGBA",
-        "transparency": {
-            "rule": "Nearest sampled source pixel equal to zero is transparent",
-            "alpha_zero": 0,
-            "alpha_opaque": 255,
-            "purpose": "Display-only background transparency",
+        "format": "JPEG RGB",
+        "background": {
+            "rule": (
+                "Vendor-confirmed zero-valued background pixels "
+                "are rendered black"
+            ),
+            "background_colour": "black",
+            "source_pixel_values_modified": False,
             "scientific_nodata_assignment": False,
         },
         "note": (
-            "Display-only PNGs with an alpha channel. Zero-valued "
-            "pixels are transparent for visualization only. This "
-            "does not modify source data or assign scientific NoData."
+            "Display-only JPEG previews. Zero-valued background "
+            "pixels are rendered black. The source raster and "
+            "scientific COG pixel values are not modified."
         ),
     }
-
 
 
 def _verify_cog(
@@ -293,10 +284,10 @@ def _verify_cog(
         compression = (
             str(cog.compression) if cog.compression else None
         )
-        tiled = cog.is_tiled
         block_shapes = [
             list(shape) for shape in cog.block_shapes
         ]
+        tiled = block_shapes[0][1] < cog.width
         overview_levels = cog.overviews(1)
 
     # Only ordinary Python values are accessed here.
@@ -319,7 +310,8 @@ def _create_map_cog(
     """Create a visualization COG with an internal zero-value mask.
 
     The source pixel values are preserved. The internal TIFF mask
-    is a provisional display rule, not a scientific NoData assignment.
+    marks vendor-confirmed background pixels as invalid for display. It does not
+    assign scientific NoData or alter pixel values.
     """
 
     temporary_path = map_cog_path.with_name(
@@ -489,44 +481,36 @@ def _create_map_cog(
     }
 
 
-def _tivion_scene_details(xml_path: Path) -> tuple[str, str]:
-    """Extract the AIRSAT-05 scene ID and acquisition date from XML."""
+def _airsat_scene_details(xml_path: Path) -> tuple[str, str]:
+    """Extract the full vendor product ID and acquisition date."""
 
     import re
 
     xml_metadata = _xml_metadata(xml_path)
+    product_id = xml_metadata.get("Productid")
 
-    # Convert metadata to text so the product ID can be located.
-    metadata_text = json.dumps(xml_metadata, default=str)
-
-    product_match = re.search(
-        r"AS05_[A-Z0-9]+_[A-Z0-9]+_(\d{6})_",
-        metadata_text,
-    )
+    if not product_id:
+        raise ValueError(
+            "Vendor XML does not contain Productid."
+        )
 
     date_match = re.search(
         r"_(\d{14})_L2_",
-        metadata_text,
+        product_id,
     )
-
-    if not product_match:
-        raise ValueError(
-            "Could not extract the six-digit scene ID from XML Productid."
-        )
 
     if not date_match:
         raise ValueError(
-            "Could not extract the acquisition timestamp from XML Productid."
+            "Could not extract acquisition timestamp from XML Productid."
         )
 
-    scene_id = f"AS05_{product_match.group(1)}"
+    timestamp = date_match.group(1)
     acquisition_date = (
-        f"{date_match.group(1)[:4]}-"
-        f"{date_match.group(1)[4:6]}-"
-        f"{date_match.group(1)[6:8]}"
+        f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
     )
 
-    return scene_id, acquisition_date
+    return product_id, acquisition_date
+
 
 def process_airsat05(
     input_file: str | Path,
@@ -554,7 +538,7 @@ def process_airsat05(
             f"Metadata XML not found: {xml_path}"
         )
 
-    scene_id, acquisition_date = _tivion_scene_details(xml_path)
+    scene_id, acquisition_date = _airsat_scene_details(xml_path)
 
     if output_dir is None:
         project_root = Path(__file__).resolve().parents[3]
@@ -589,8 +573,8 @@ def process_airsat05(
 
     cog_path = cog_dir / "sar_hh_cog.tif"
     map_cog_path = cog_dir / "sar_hh_map_cog.tif"
-    preview_path = previews_dir / "sar_hh_preview.png"
-    thumbnail_path = previews_dir / "sar_hh_thumbnail.png"
+    preview_path = previews_dir / "sar_hh_preview.jpg"
+    thumbnail_path = previews_dir / "sar_hh_thumbnail.jpg"
 
     metadata_path = metadata_dir / "metadata.json"
     footprint_path = metadata_dir / "footprint.geojson"
@@ -612,21 +596,17 @@ def process_airsat05(
         if src.width <= 0 or src.height <= 0:
             raise ValueError("Invalid source raster dimensions.")
 
-        bounds = src.bounds
-
-        if src.crs.to_epsg() == 4326:
-            geographic_bounds = bounds
-        else:
-            geographic_bounds = transform_bounds(
-                src.crs,
-                "EPSG:4326",
-                *bounds,
-                densify_pts=21,
+        if src.crs.to_epsg() != 4326:
+            raise ValueError(
+                "AIRSAT source TIFF must use EPSG:4326. "
+                f"Found: {src.crs}"
             )
+
+        bounds = src.bounds
 
         west, south, east, north = map(
             float,
-            geographic_bounds,
+            bounds,
         )
 
         raster_metadata = {
@@ -715,8 +695,14 @@ def process_airsat05(
 
     vendor_footprint_ring = _xml_corner_coordinates(xml_path)
 
+    footprint_comparison = compare_footprints(
+        raster_bounds=(west, south, east, north),
+        vendor_coordinates=vendor_footprint_ring,
+    )
+
     footprint = {
         "type": "FeatureCollection",
+        "footprint_comparison": footprint_comparison,
         "features": [
             {
                 "type": "Feature",
@@ -736,7 +722,7 @@ def process_airsat05(
                     "geometry_role": "vendor_scene_footprint",
                     "source": "AIRSAT-05 vendor XML corner coordinates",
                     "crs": "EPSG:4326",
-                    "validation_status": "pending_boundary_validation",
+                    "validation_status": "quantitatively_compared",
                     "used_as_nodata_mask": False,
                 },
                 "geometry": {
@@ -758,7 +744,7 @@ def process_airsat05(
     metadata = {
         "record_type": "AIRSAT-05 SAR product",
         "generated_utc": generated_time,
-        "source": "TIVION",
+        "source": "airsat",
         "satellite": "AIRSAT-05",
         "polarisation": "HH",
         "product_id": scene_id,
@@ -769,8 +755,8 @@ def process_airsat05(
             "source_metadata_xml": "source/original.meta.xml",
             "sar_hh_cog": "cog/sar_hh_cog.tif",
             "sar_hh_map_cog": "cog/sar_hh_map_cog.tif",
-            "sar_hh_preview": "previews/sar_hh_preview.png",
-            "sar_hh_thumbnail": "previews/sar_hh_thumbnail.png",
+            "sar_hh_preview": "previews/sar_hh_preview.jpg",
+            "sar_hh_thumbnail": "previews/sar_hh_thumbnail.jpg",
             "metadata": "metadata/metadata.json",
             "footprint": "metadata/footprint.geojson",
             "manifest": "manifest.json",
@@ -790,8 +776,6 @@ def process_airsat05(
                 "Do not interpret this value as ground resolution."
             ),
             "vendor_confirmed_nominal_spatial_resolution_m": 0.5,
-            "ground_range_resolution_estimated_m": 0.45,
-            "azimuth_resolution_estimated_m": 0.62,
             "output_pixel_spacing_m": {
                 "width": (
                     float(xml_metadata["Widthspace"])
@@ -804,14 +788,21 @@ def process_airsat05(
                     else None
                 ),
             },
-            "resolution_source": "AIRSAT-05 vendor clarification",
-            "pixel_spacing_source": "AIRSAT-05 vendor XML",
         },
         "georeferencing": {
             "product_level": xml_metadata.get("productLevel"),
+            "product_level_description": (
+                "L2 GEC (Geocoded Ellipsoid Corrected)"
+            ),
             "correction_level": "GEC (Geocoded Ellipsoid Corrected)",
             "terrain_correction_applied": False,
+            "xml_project_model": xml_metadata.get("ProjectModel"),
             "output_crs": raster_metadata["crs"],
+            "output_grid": (
+                "Geographic longitude/latitude grid (EPSG:4326), "
+                "preserved from the supplied TIFF. No reprojection "
+                "or UTM zone assignment is performed by this processor."
+            ),
             "description": (
                 "Vendor-confirmed systematic geometric correction "
                 "with ellipsoid correction; not terrain corrected."
@@ -824,6 +815,11 @@ def process_airsat05(
             "units": "DN",
             "value_scale": "Linear, not decibels (dB)",
             "calibration_constant_xml": xml_metadata.get("CalibrationConst"),
+            "calibration_constant_unit": "dB",
+            "calibration_constant_confirmation": (
+                "The XML reports 0 dB. Its calibration meaning and "
+                "validity remain subject to vendor confirmation."
+            ),
             "radiometric_model_xml": xml_metadata.get("RadiometricModel"),
             "backscatter_coefficient_calibration": (
                 "Not established as calibrated sigma0, gamma0 or beta0."
@@ -831,6 +827,39 @@ def process_airsat05(
             "sigma0_available": False,
             "gamma0_available": False,
             "beta0_available": False,
+        },
+        "radiometric_corrections": {
+            "receiver_settable_gain": {
+                "xml_value": xml_metadata.get("ReceiverSettableGain"),
+                "xml_flag_enabled": (
+                    xml_metadata.get("ReceiverSettableGain") == "1"
+                ),
+            },
+            "processor_gain_correction": {
+                "xml_value": xml_metadata.get("ProcessorGainCorrection"),
+                "xml_flag_enabled": (
+                    xml_metadata.get("ProcessorGainCorrection") == "1"
+                ),
+            },
+            "range_antenna_pattern_correction": {
+                "xml_field": "ElevationPatternCorrection",
+                "xml_value": xml_metadata.get("ElevationPatternCorrection"),
+                "xml_flag_enabled": (
+                    xml_metadata.get("ElevationPatternCorrection") == "1"
+                ),
+            },
+            "azimuth_antenna_pattern_correction": {
+                "xml_field": "AmuthPatternCorrection",
+                "xml_value": xml_metadata.get("AmuthPatternCorrection"),
+                "xml_flag_enabled": (
+                    xml_metadata.get("AmuthPatternCorrection") == "1"
+                ),
+            },
+            "interpretation": (
+                "These are vendor XML flags. A value of 1 is reported "
+                "as enabled; the processor does not independently "
+                "recalculate or verify these corrections."
+            ),
         },
         "limitations": [
             "The product is L2 GEC (Geocoded Ellipsoid Corrected), "
@@ -849,7 +878,7 @@ def process_airsat05(
         "footprint_information": {
             "raster_extent_available": True,
             "vendor_scene_footprint_available": True,
-            "boundary_validation": "Pending",
+            "boundary_validation": "quantitatively_compared",
             "used_as_nodata_mask": False,
         },
         "scientific_interpretation": {
@@ -865,22 +894,28 @@ def process_airsat05(
                 "Terrain correction has not been applied."
             ),
             "zero_values": (
-                "Preserved unchanged. Vendor reports background-filled "
-                "zero values outside valid imaging coverage. No NoData "
-                "mask is applied pending boundary validation."
+                "Preserved unchanged in the scientific COG. Vendor "
+                "confirms zero-valued pixels are background outside "
+                "valid imaging coverage. The separate map COG uses "
+                "an internal mask to mark these pixels invalid for "
+                "display; no scientific NoData is assigned."
             ),
             "footprint": (
-                "Raster extent and vendor scene footprint are stored "
-                "separately. Boundary validation is pending."
+                "Raster extent and vendor scene footprint are retained "
+                "separately and quantitatively compared. Comparison "
+                "metrics are recorded in footprint.geojson; no "
+                "arbitrary pass/fail threshold is applied."
             ),
             "display_values": (
-                "RGBA PNGs use a display-only percentile stretch and transparent zero-valued background pixels."
+                "RGB JPEG previews use a display-only percentile "
+                "stretch. Zero-valued background pixels are rendered "
+                "black; scientific raster values are unchanged."
             ),
             "map_cog": (
                 "The separate map COG preserves SAR DN values and uses "
-                "an internal TIFF mask to make zero-valued pixels "
-                "transparent for visualization only. This is not a "
-                "scientific NoData assignment."
+                "an internal TIFF mask to mark vendor-confirmed "
+                "zero-valued background pixels invalid for display. "
+                "This is not a scientific NoData assignment."
             ),
         },
     }
@@ -889,13 +924,25 @@ def process_airsat05(
         json.dumps(metadata, indent=2) + "\n"
     )
 
+    # Concise API summary derived from the persisted metadata.
+    technical_metadata = {
+        "spatial_resolution": metadata["spatial_resolution"],
+        "georeferencing": metadata["georeferencing"],
+        "raster": {
+            "data_types": metadata["raster"]["data_types"],
+            "crs": metadata["raster"]["crs"],
+        },
+        "radiometry": metadata["radiometry"],
+        "radiometric_corrections": metadata["radiometric_corrections"],
+    }
+
     assets = {
         "source_original": "source/original.tiff",
         "source_metadata_xml": "source/original.meta.xml",
         "sar_hh_cog": "cog/sar_hh_cog.tif",
         "sar_hh_map_cog": "cog/sar_hh_map_cog.tif",
-        "sar_hh_preview": "previews/sar_hh_preview.png",
-        "sar_hh_thumbnail": "previews/sar_hh_thumbnail.png",
+        "sar_hh_preview": "previews/sar_hh_preview.jpg",
+        "sar_hh_thumbnail": "previews/sar_hh_thumbnail.jpg",
         "metadata": "metadata/metadata.json",
         "footprint": "metadata/footprint.geojson",
     }
@@ -912,7 +959,7 @@ def process_airsat05(
         "manifest_version": "1.0",
         "product_id": scene_id,
         "acquisition_date": acquisition_date,
-        "source": "tivion",
+        "source": "airsat",
         "platform": "AIRSAT-05",
         "polarisation": "HH",
         "assets": assets,
@@ -926,12 +973,13 @@ def process_airsat05(
     )
     return {
         "status": "completed",
-        "source": "tivion",
+        "source": "airsat",
         "product": "SAR_INTENSITY",
         "polarisation": "HH",
         "product_id": scene_id,
         "acquisition_date": acquisition_date,
         "output_directory": str(root),
+        "technical_metadata": technical_metadata,
         "assets": {
             "source_original": str(original_copy),
             "source_metadata_xml": str(xml_copy),

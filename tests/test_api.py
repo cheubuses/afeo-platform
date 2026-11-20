@@ -411,7 +411,7 @@ def test_dedicated_source_does_not_enter_generic_pipeline(
 
     request = {
         **valid_request,
-        "source": "tivion",
+        "source": "airsat",
     }
 
     result = run_processing(**request)

@@ -7,7 +7,7 @@ import rasterio
 from rasterio.transform import from_origin
 from PIL import Image
 
-from eo.tivion.processor import process_airsat05
+from eo.airsat.processor import process_airsat05
 
 
 def test_airsat05_metadata_and_two_part_footprint(tmp_path):
@@ -41,6 +41,11 @@ def test_airsat05_metadata_and_two_part_footprint(tmp_path):
             <Heightspace>5.025935e-01</Heightspace>
             <CalibrationConst>0</CalibrationConst>
             <RadiometricModel>0</RadiometricModel>
+            <ProjectModel>UTM</ProjectModel>
+            <ReceiverSettableGain>1</ReceiverSettableGain>
+            <ProcessorGainCorrection>1</ProcessorGainCorrection>
+            <ElevationPatternCorrection>1</ElevationPatternCorrection>
+            <AmuthPatternCorrection>1</AmuthPatternCorrection>
             <corner>
                 <topLeft>
                     <Latitude>-1.279723</Latitude>
@@ -73,17 +78,20 @@ def test_airsat05_metadata_and_two_part_footprint(tmp_path):
     assert result["status"] == "completed"
     assert result["validation"]["pixel_values_identical"] is True
 
-    preview_path = output_dir / "previews" / "sar_hh_preview.png"
-    thumbnail_path = output_dir / "previews" / "sar_hh_thumbnail.png"
+    preview_path = output_dir / "previews" / "sar_hh_preview.jpg"
+    thumbnail_path = output_dir / "previews" / "sar_hh_thumbnail.jpg"
 
     with Image.open(preview_path) as preview:
-        assert preview.mode == "RGBA"
-        alpha = np.asarray(preview.getchannel("A"))
-        assert np.any(alpha == 0)
-        assert np.any(alpha == 255)
+        assert preview.format == "JPEG"
+        assert preview.mode == "RGB"
+        preview_pixels = np.asarray(preview)
+        assert preview_pixels.shape[2] == 3
+        assert np.max(preview_pixels[0]) <= 2
 
     with Image.open(thumbnail_path) as thumbnail:
-        assert thumbnail.mode == "RGBA"
+        assert thumbnail.format == "JPEG"
+        assert thumbnail.mode == "RGB"
+
 
     metadata = json.loads(
         (output_dir / "metadata" / "metadata.json").read_text()
@@ -117,26 +125,83 @@ def test_airsat05_metadata_and_two_part_footprint(tmp_path):
         [36.984885, -1.279723],
     ]
 
+    assert metadata["source"] == "airsat"
+    assert metadata["satellite"] == "AIRSAT-05"
+    assert metadata["product_id"] == (
+        "AS05_ABC_DEF_006596_20261028235248_L2_TEST"
+    )
+    assert metadata["acquisition_date"] == "2026-10-28"
+
+    comparison = footprint["footprint_comparison"]
+
+    assert comparison["comparison_method"]
+    assert 0 <= comparison["intersection_over_union"] <= 1
+    assert 0 <= comparison["symmetric_difference_percent_of_union"] <= 100
+    assert comparison["boundary_hausdorff_distance_m"] >= 0
+    assert comparison["raster_area_m2"] > 0
+    assert comparison["vendor_footprint_area_m2"] > 0
+
+    comparison = footprint["footprint_comparison"]
+
+    assert comparison["comparison_method"]
+    assert 0 <= comparison["intersection_over_union"] <= 1
+    assert 0 <= comparison["symmetric_difference_percent_of_union"] <= 100
+    assert comparison["boundary_hausdorff_distance_m"] >= 0
+    assert comparison["raster_area_m2"] > 0
+    assert comparison["vendor_footprint_area_m2"] > 0
+
     resolution = metadata["spatial_resolution"]
 
     assert resolution["nominal_resolution_xml_value"] == 0.135346
     assert resolution["vendor_confirmed_nominal_spatial_resolution_m"] == 0.5
-    assert resolution["ground_range_resolution_estimated_m"] == 0.45
-    assert resolution["azimuth_resolution_estimated_m"] == 0.62
     assert resolution["output_pixel_spacing_m"]["width"] == 0.5025935
     assert resolution["output_pixel_spacing_m"]["height"] == 0.5025935
+
+    assert "ground_range_resolution_estimated_m" not in resolution
+    assert "azimuth_resolution_estimated_m" not in resolution
+    assert "resolution_source" not in resolution
+    assert "pixel_spacing_source" not in resolution
 
     assert metadata["georeferencing"]["correction_level"].startswith("GEC")
     assert metadata["georeferencing"]["terrain_correction_applied"] is False
 
     assert metadata["radiometry"]["units"] == "DN"
+    assert metadata["radiometry"]["value_scale"] == "Linear, not decibels (dB)"
+    assert metadata["radiometry"]["calibration_constant_xml"] == "0"
+    assert metadata["radiometry"]["calibration_constant_unit"] == "dB"
+    assert "vendor confirmation" in (
+        metadata["radiometry"]["calibration_constant_confirmation"]
+    )
     assert metadata["radiometry"]["sigma0_available"] is False
+    assert metadata["radiometry"]["gamma0_available"] is False
+    assert metadata["radiometry"]["beta0_available"] is False
 
-    assert metadata["footprint_information"]["used_as_nodata_mask"] is False
+    georeferencing = metadata["georeferencing"]
+    assert georeferencing["product_level"] == "L2"
+    assert georeferencing["product_level_description"].startswith("L2 GEC")
+    assert georeferencing["xml_project_model"] == "UTM"
+    assert georeferencing["output_crs"] == "EPSG:4326"
+    assert "EPSG:4326" in georeferencing["output_grid"]
 
-    assert metadata["scientific_interpretation"]["zero_values"].find(
-        "NoData mask is applied"
-    ) >= 0
+    corrections = metadata["radiometric_corrections"]
+    assert corrections["receiver_settable_gain"]["xml_flag_enabled"] is True
+    assert corrections["processor_gain_correction"]["xml_flag_enabled"] is True
+    assert corrections["range_antenna_pattern_correction"]["xml_flag_enabled"] is True
+    assert corrections["azimuth_antenna_pattern_correction"]["xml_flag_enabled"] is True
+
+    footprint_info = metadata["footprint_information"]
+    assert footprint_info["used_as_nodata_mask"] is False
+    assert footprint_info["boundary_validation"] == (
+        "quantitatively_compared"
+    )
+
+    zero_values = metadata["scientific_interpretation"]["zero_values"]
+    assert "background outside" in zero_values
+    assert "no scientific NoData is assigned" in zero_values
+
+    display_values = metadata["scientific_interpretation"]["display_values"]
+    assert "RGB JPEG previews" in display_values
+    assert "rendered black" in display_values
 
     with rasterio.open(raster_path) as original:
         original_pixels = original.read(1)
